@@ -1,0 +1,38 @@
+{
+  "name": "brarchive-extractor",
+  "version": "0.1.0",
+  "description": "Unpack Minecraft Bedrock brarchive files and restore MCB documents with BDS schemas.",
+  "type": "module",
+  "bin": {
+    "brax": "dist/src/cli.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "README.zh.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/brarchive.test.js dist/test/mcb.test.js dist/test/integration.test.js",
+    "start": "node dist/src/cli.js"
+  },
+  "keywords": [
+    "minecraft",
+    "bedrock",
+    "brarchive",
+    "mcb"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.6",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "cli-progress": "^3.12.0"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.log
+.test-*/
+test/input/
+test/input_unpacked
+test/bds-schema/
