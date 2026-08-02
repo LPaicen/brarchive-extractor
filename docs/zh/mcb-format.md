@@ -2,28 +2,105 @@
 
 [English](../mcb-format.md)
 
-MCB 是 Minecraft Bedrock 使用的 schema 驱动二进制文档。固定文件头只描述版本和文档类型；后续 payload 没有自描述字段名，必须使用与版本、文档类型匹配的 BDS JSON schema 才能解释。
+MCB 是 Minecraft Bedrock 使用的、由 schema 驱动的二进制文档格式。它既不是压缩后的 JSON，也不是自描述对象流：文件头只标识文档类型和版本，payload 不保存 JSON 字段名。因此，正确还原必须同时具备原始字节和由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 导出的兼容 Cereal schema。
 
-本文记录当前工具通过逆向分析和样本回归实现的结构。不同游戏版本或文档类型可能引入尚未覆盖的编码规则，因此未知构造必须失败并保留原始数据，不能猜测性输出 JSON。
+本文描述 `brax` 当前实现的格式，依据包括 Bedrock 读取器逆向分析、BDS schema 元数据以及完整 preview 版资源包和行为包的精确消费测试。没有证据支持的规则会被拒绝，不会通过猜测生成 JSON。
 
-## 固定文件头
+## 文法记号
 
-所有固定宽度整数均为小端序：
+下文使用二进制伪 BNF。相邻产生式表示字节在流中连续存放；`S`、`P` 和 `T` 是 schema 参数，不是文件内的字节。
 
-| 偏移 | 大小 | 类型 | 含义 |
+```bnf
+octet       ::= 一个字节
+u8          ::= octet
+i8          ::= octet
+u16le       ::= octet octet
+i16le       ::= octet octet
+u32le       ::= octet octet octet octet
+i32le       ::= octet octet octet octet
+u64le       ::= octet octet octet octet octet octet octet octet
+i64le       ::= octet octet octet octet octet octet octet octet
+f32le       ::= 4 字节 IEEE-754 binary32，小端
+f64le       ::= 8 字节 IEEE-754 binary64，小端
+bytes(N)    ::= octet 重复 N 次
+value(S)    ::= schema S 选择的产生式
+value(S)*N  ::= value(S) 重复 N 次
+EOF         ::= 不再剩余任何字节
+```
+
+所有多字节定长值均为小端序。
+
+## 完整文件
+
+```bnf
+mcb-file      ::= magic semantic-version document-type root-payload EOF
+magic         ::= %x7F %x4D %x43 %x42
+semantic-version ::= u16le-major u16le-minor u32le-patch
+document-type ::= string
+root-payload  ::= value(select-root(document-type, semantic-version))
+```
+
+| 偏移 | 大小 | 编码 | 含义 |
 |---:|---:|---|---|
-| `0x00` | 4 | `uint32 LE` | 魔数 `0x42434D7F`；文件字节为 `7F 4D 43 42` |
+| `0x00` | 4 | 固定字节 | `7F 4D 43 42`，作为 `uint32 LE` 时为 `0x42434D7F` |
 | `0x04` | 2 | `uint16 LE` | major 版本 |
 | `0x06` | 2 | `uint16 LE` | minor 版本 |
 | `0x08` | 4 | `uint32 LE` | patch 版本 |
-| `0x0C` | 变长 | string | 文档类型 |
-| 后续 | 变长 | schema payload | 根对象二进制数据 |
+| `0x0C` | 可变 | `string` | 文档类型 |
+| 后续 | 可变 | schema 决定 | 根 payload |
 
-版本字符串按 `major.minor.patch` 组合。文档类型通常类似 `particle_effect` 或 `minecraft:voxel_shape`，用于匹配 schema 的 `title`。
+例如，下面的前缀表示版本 `1.26.10`、文档类型 `particle_effect`：
+
+```hex
+7F 4D 43 42  01 00  1A 00  0A 00 00 00
+0F 70 61 72 74 69 63 6C 65 5F 65 66 66 65 63 74
+```
+
+末尾的 `EOF` 校验很重要。选择错误分支后，解码器仍可能产生表面合理的值，但只要存在尾随字节，就能证明所选 schema 路径没有描述完整 payload。
+
+## 根 Schema 选择
+
+schema 导出根目录必须包含：
+
+```text
+exist.json
+contents.json
+metadata/json_schemas/
+```
+
+`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，解析相对 `$ref` 和 JSON Pointer 片段，并按 `title` 对根候选分组。对于数字版本，优先选择不高于 MCB 文件头版本的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。
+
+多数文档类型与根 schema 标题相同。目前 BDS 导出需要以下已确认别名：
+
+| MCB 文档类型 | BDS schema 标题 | 还原后的顶层成员 |
+|---|---|---|
+| `particle_effect` | `particle_effect` | `particle_effect` |
+| `minecraft:voxel_shape` | `VoxelShapeFile` | `minecraft:voxel_shape` |
+| `minecraft:item` | `Item Document` | `minecraft:item` |
+| `tiers` | `Trade Table` | `tiers` |
+
+解码后的 schema 值会包在原始 MCB 文档类型下面。一般文档还会从所选 schema 补入 `format_version`。`tiers` 是已确认的例外：其根 schema 是数组，源 JSON 结构为 `{ "tiers": [...] }`，没有 `format_version`。
+
+```bnf
+normal-root-json ::= {
+  "format_version": selected-schema-version,
+  document-type: root-payload
+}
+
+trade-root-json ::= { "tiers": root-payload }
+```
+
+这个外层结构属于重建元数据；原缩进、注释、属性书写顺序，以及默认值是否曾被显式写出，都无法恢复。
 
 ## VarUInt32
 
-动态长度和容器数量使用无符号 LEB128 风格的 `VarUInt32`：每个字节低 7 位保存数据，最高位表示后面仍有字节，最多 5 字节。
+```bnf
+varuint32 ::= continuation-octet* final-octet
+continuation-octet ::= 最高位为 1 的 octet
+final-octet        ::= 最高位为 0 的 octet
+```
+
+每个字节贡献低 7 位，低有效位组在前：
 
 ```text
 result = 0
@@ -35,127 +112,294 @@ for i in 0 .. 4:
 error
 ```
 
-第 5 字节不能使用超过 uint32 范围的高位。
+最多允许 5 个字节，第 5 个字节只能贡献低 4 位。字符串、动态数组、普通映射以及归一化交易项列表的长度或数量都使用这种编码。
 
-## 字符串
+## 数值类型
 
-字符串布局为：
+JSON schema 的 `x-underlying-type` 决定实际存储宽度：
 
-```text
-VarUInt32 utf8_byte_length
-byte[utf8_byte_length] utf8_data
+```bnf
+numeric(uint8)  ::= u8
+numeric(int8)   ::= i8
+numeric(uint16) ::= u16le
+numeric(int16)  ::= i16le
+numeric(uint32) ::= u32le
+numeric(int32)  ::= i32le
+numeric(uint64) ::= u64le
+numeric(int64)  ::= i64le
+numeric(float)  ::= f32le
+numeric(double) ::= f64le
 ```
 
-字符串没有 NUL 终止符。长度是 UTF-8 字节数，不是 Unicode 字符数。非法 UTF-8 被视为解码失败。
+| Schema 值 | 字节数 | 说明 |
+|---|---:|---|
+| `uint8`、`int8` | 1 | 原始整数 |
+| `uint16`、`int16` | 2 | 小端 |
+| `uint32`、`int32` | 4 | 小端 |
+| `uint64`、`int64` | 8 | 小端 |
+| `float` | 4 | IEEE-754 binary32 |
+| `double` | 8 | IEEE-754 binary64 |
 
-## schema 选择
+由于 JSON 无法表示非有限数，NaN 和无穷大都会被拒绝。超过 JavaScript 安全整数范围的整数会输出为十进制字符串，避免静默丢失精度。数值 schema 如果没有受支持的 `x-underlying-type`，就无法可靠解码。
 
-schema 根目录由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 生成，必须包含：
+## 布尔值
 
-```text
-exist.json
-contents.json
-metadata/json_schemas/
+```bnf
+boolean ::= %x00 | %x01
 ```
 
-`exist.json` 通常包含 BDS 导出版本和 build version。`contents.json` 描述导出内容根项；工具要求二者同时存在，以避免误把任意 schema 子目录当成导出根。
+`00` 表示 `false`，`01` 表示 `true`，其他值均为错误。普通布尔值和可选字段的 presence 标记使用相同编码。
 
-工具递归加载 `metadata/json_schemas` 中带 `$id` 的 schema，并执行：
+## 字符串与字符串枚举
 
-1. 用 MCB 文档类型匹配 schema `title`；
-2. 读取 `x-format-version`；
-3. 如果有多个数值版本，优先选择不高于 MCB 头版本的最新版本；
-4. 使用 `$ref` 和 JSON Pointer 解析引用；
-5. 使用 `x-ordinal-index`、`x-underlying-type` 等扩展解释 payload。
+```bnf
+string      ::= varuint32-length utf8-bytes(length)
+string-enum ::= string
+```
 
-## 对象字段
+长度表示 UTF-8 字节数，不是 Unicode 字符数，字符串末尾没有 NUL。非法 UTF-8 会被拒绝。当前确认的字符串枚举在 MCB 中没有数字标签，仍按字符串存放；解码后再检查该值是否属于 schema 的 `enum`。
 
-对象的 JSON 属性名不会写入 MCB。字段按 `x-ordinal-index` 从小到大排列。重复 ordinal 或缺少必要 ordinal 时无法可靠解码。
+例如：
 
-字段存在规则：
+```hex
+0F 70 61 72 74 69 63 6C 65 5F 65 66 66 65 63 74
+```
 
-- `required` 字段无条件出现；
-- schema 中显式带 `default` 的字段无条件出现；
-- 其他字段前置一个 `uint8` presence 标记：`0` 表示缺失，`1` 表示后接字段值；
-- presence 不是 0 或 1 时视为损坏数据。
+`0F` 是字节长度，后续 15 个字节解码为 `particle_effect`。
 
-对象本身通常没有总长度，因此字段顺序错误会导致后续所有字节错位。
+## 对象与字段
 
-## 数值
+MCB 不保存对象属性名。属性按照 `x-ordinal-index` 从小到大解码。
 
-数值宽度由 `x-underlying-type` 决定。当前实现支持：
+```bnf
+object(S) ::= field(P0) field(P1) ... field(Pn)
+             ; P0..Pn 按 x-ordinal-index 排序
 
-| underlying type | 编码 |
+field(required-or-default P) ::= value(P)
+field(optional P)            ::= presence(P)
+presence(P)                  ::= %x00 | %x01 value(P)
+```
+
+当属性名出现在父 schema 的 `required` 数组中，或属性 schema 显式带有 `default` 时，该字段无条件存储；其他属性以一个字节的 presence 标记开始。因此，在这种二进制 schema 中，`default` 表示存储无条件存在，解码器不会凭空插入未存储的默认值。
+
+对象没有字段数量，通常也没有总字节长度。因此，缺失或重复的 ordinal 元数据会直接导致失败：一旦字段顺序选错，后续所有值都会错位。没有属性且没有 `additionalProperties` 的对象消费 0 字节。
+
+## 数组与元组
+
+当前支持三种布局。
+
+元组 schema 直接依次存放每个位置，不带数量：
+
+```bnf
+tuple([S0, S1, ... Sn]) ::= value(S0) value(S1) ... value(Sn)
+```
+
+当 `minItems` 与 `maxItems` 相等时，数组长度由 schema 固定：
+
+```bnf
+fixed-array(S, N) ::= value(S)*N
+```
+
+其他同构数组使用 VarUInt32 数量：
+
+```bnf
+dynamic-array(S) ::= varuint32-count value(S)*count
+```
+
+解码器将容器数量限制为 1,000,000。例如，体素形状的 `boxes` 虽然在 schema 中限制为 1-32 项，仍是动态数组；每个 box 中的 `vec3` 则是恰好三个 float32 的定长数组。
+
+## 映射
+
+没有命名属性、但具有对象类型 `additionalProperties` 的 schema 对象按动态映射存储：
+
+```bnf
+map(K, V) ::= varuint32-count map-entry(K, V)*count
+map-entry(K, V) ::= map-key(K) value(V)
+map-key(string) ::= string
+map-key(float)  ::= f32le
+map-key(int32)  ::= i32le
+```
+
+键类型由 `x-key-underlying-type` 选择，默认是 `string`。重复键会被拒绝，否则还原为 JSON 对象时会丢弃数据。
+
+`Item Descriptor` 是归一化映射存储的例子。下面字节表示只有一项的 descriptor：
+
+```hex
+01                         ; map 数量
+04 6E 61 6D 65             ; 键 "name"
+15 6D 69 6E 65 ... 62 6F 78 ; 值 "minecraft:shulker_box"
+```
+
+## 组件存储
+
+当对象 schema 的属性都是 `minecraft:icon` 之类的组件名，且这些属性没有 ordinal 时，它使用独立的哈希表布局：
+
+```bnf
+component-storage(S) ::= u32le-count component-entry(S)*count
+component-entry(S)   ::= u32le-name-hash value(component-schema(name-hash))
+```
+
+键是完整组件名 UTF-8 字节的 32 位 FNV-1a：
+
+```text
+hash = 0x811C9DC5
+for byte in utf8(component_name):
+    hash = hash XOR byte
+    hash = (hash * 0x01000193) modulo 2^32
+```
+
+组件 payload 没有长度字段。必须先由哈希找到组件 schema，才能知道下一个值的偏移。未知哈希、重复组件或哈希碰撞都会报错，不能直接跳过。
+
+## `oneOf`：带标签二进制变体
+
+真正的二进制变体使用一个字节的 discriminator：
+
+```bnf
+tagged-one-of(S) ::= u8-tag value(branch(S, tag))
+```
+
+当分支带有 `x-ordinal-index` 时，tag 选择对应 ordinal。以下已确认 schema 类型的导出分支缺少 ordinal，但字节中仍有从 0 开始的 tag：
+
+| Schema 标题 | Tag 行为 |
 |---|---|
-| `uint8` / `int8` | 1 字节 |
-| `uint16` / `int16` | 2 字节，小端 |
-| `uint32` / `int32` | 4 字节，小端 |
-| `uint64` / `int64` | 8 字节，小端 |
-| `float` | IEEE-754 float32，小端 |
-| `double` | IEEE-754 float64，小端 |
+| `particle_curve` | `0` 选择 linear，`1` 选择 bezier-chain |
+| `particle_appearance_tinting color_data` | 从 0 开始的分支索引 |
 
-超出 JavaScript 安全整数范围的 64 位整数以十进制字符串输出。NaN 和 Infinity 被拒绝。
+粒子曲线边界处的样本字节如下：
 
-## 布尔值和枚举
-
-布尔值是一个字节，只接受 `0` 或 `1`。当前样本中的字符串枚举仍按普通 MCB 字符串保存，并在读取后检查是否属于 schema `enum`。
-
-## 数组
-
-数组有三种已知形式：
-
-- tuple：schema `items` 是数组，按 schema 中的项目依次读取，不保存数量；
-- 定长数组：`minItems == maxItems`，数量由 schema 决定，不保存数量；
-- 动态数组：先读取 `VarUInt32 count`，随后读取 `count` 个相同 item。
-
-工具对容器数量设置上限，避免损坏数据导致无限循环或过量内存使用。
-
-## map
-
-动态 map 先读取 `VarUInt32 count`，随后重复读取 key 和 value。当前 key 支持：
-
-- `string`：MCB 字符串；
-- `float`：float32；
-- `int32`：小端 int32。
-
-value 使用 `additionalProperties` 对应的 schema。重复 key 被视为解码错误。
-
-## oneOf 和 variant
-
-真正的二进制 variant 通常先保存一个 `uint8` tag。tag 对应 oneOf 分支的 `x-ordinal-index`；缺少显式 ordinal 时，部分已确认类型按分支索引处理。
-
-某些 `oneOf` 只表示 JSON 文本允许多种写法，内部二进制已经规范化。例如 Molang 字符串、颜色表达式和特定向量类型可能不保存 variant tag，而是始终按已确认的内部表示读取。无法从 schema 或已确认规则判断分支时，工具必须报告 `unsupported-schema`。
-
-## 组件表
-
-组件存储不是普通 ordinal 对象。当前已确认布局为：
-
-```text
-uint32_le component_count
-repeat component_count times:
-    uint32_le component_name_hash
-    component_payload
+```hex
+00 06 6C 69 6E 65 61 72 ...
 ```
 
-hash 是组件完整名称 UTF-8 字节的 32 位 FNV-1a。工具根据 schema 中所有组件名预计算 hash，再用 hash 找到对应 schema。未知 hash、重复组件或 FNV-1a 碰撞都会失败。
+`00` 选择 linear 分支；`06 "linear"` 是该分支的第一个字段。如果把 `00` 当作字符串或 presence 的一部分，后续曲线数据就会整体错位。
 
-## 根对象和尾部校验
+## `oneOf`：归一化表示
 
-解码完成后，根值必须是 JSON 对象，并且读取位置必须恰好等于 MCB 文件长度。任何剩余字节都会产生 `trailing-data`；这通常表示 schema 版本不匹配、字段顺序错误或存在尚未实现的编码规则。
+部分 `oneOf` 只描述 JSON 可接受的多种写法，并不表示二进制存在多个布局。编译后的 C++ 值只有一种归一化表示，也没有 discriminator。`brax` 根据完整样本确认了以下规则：
 
-还原 JSON 会添加顶层 `format_version`，其值优先使用所选 schema 的 `x-format-version`。MCB 不保留原 JSON 的缩进、注释、属性书写顺序，也不能区分源文件显式写出的默认值与编译阶段补入的默认值，因此结果是语义还原，不保证逐字复原。
+| Schema 标题 | 选择的二进制产生式 | 还原表示 |
+|---|---|---|
+| `Molang String` | `string` 分支 | 字符串 |
+| `VectorEvents` | 数组分支 | 数组 |
+| `color_expr` | 数组分支 | 数组 |
+| `particle_motion_collision_event_vector` | 数组分支 | 数组 |
+| `vec3` | 定长数组分支 | `[x, y, z]` |
+| `minecraft:icon v1.21.80` | 对象/映射分支 | 对象 |
+| `Item Descriptor` | 对象/映射分支 | 对象 |
+| `Trade Quantity` | 对象分支 | `{min, max}` |
+| `minecraft:hand_equipped` | 布尔分支 | 布尔值 |
+| `minecraft:max_stack_size` | 整数分支 | 整数 |
 
-## 最小解析流程
+它们的文法就是直接读取已确认分支，不带前置 tag：
 
-```text
-assert read_u32le() == 0x42434D7F
-major         = read_u16le()
-minor         = read_u16le()
-patch         = read_u32le()
-document_type = read_string()
-schema        = select_schema(document_type, major.minor.patch)
-value         = decode_node(schema)
-assert reader_offset == file_length
+```bnf
+normalized-one-of(S) ::= value(confirmed-normalized-branch(S))
 ```
 
-缺少 schema、遇到未知组件或不支持的 schema 构造时，正确行为是保留原始 MCB 并报告原因。
+例如，`minecraft:max_stack_size` 的值 64 是 `40 00`（`int16 LE`），而不是 `tag + 40 00`；`vec3` 同样是连续三个 float32，既没有分支 tag，也没有数组数量。
+
+### 交易项列表
+
+`TradeItemList` 有独立的归一化容器布局：
+
+```bnf
+trade-item-list ::= varuint32-count value(TradeItem)*count
+```
+
+这里的 count 不是 `oneOf` tag。count 为 1 时还原为直接 `TradeItem` 分支，其他数量还原为 `{ "choice": [...] }`。wandering trader 样本中的 `3`、`4`、`8`、`9` 因而是候选项数量，不是未知 discriminator。
+
+## 已确认的文档 Payload
+
+上述通用规则组合成当前完整 preview 包中的几种文档类型。
+
+### 粒子效果
+
+```bnf
+particle-effect ::= object(Particle_Effect_Data)
+components      ::= component-storage(ParticleComponents)
+curves          ::= map(string, particle_curve)
+```
+
+粒子同时使用 ordinal 对象、组件哈希、Molang 值、映射、数组、带标签曲线和归一化 JSON 表示。当前 200 个粒子 MCB 样本均精确消费至 EOF。
+
+### 体素形状
+
+```bnf
+voxel-shape-file ::= description shape
+description      ::= string-identifier
+shape            ::= dynamic-array(Box)
+Box              ::= vec3-min vec3-max
+vec3             ::= f32le f32le f32le
+```
+
+实际字段由 `VoxelShapeFile`、`Description`、`Shape` 和 `Box` schema 提供。通过 `minecraft:voxel_shape` 到 `VoxelShapeFile` 的根别名，当前 218 个样本全部成功解码。
+
+### 物品
+
+```bnf
+item-document ::= description component-storage(ItemComponents)
+description   ::= 按 schema ordinal 排列的物品描述字段
+```
+
+物品组件还使用归一化的 `icon`、`hand_equipped`、`max_stack_size` 和 `Item Descriptor`。当前 23 个物品 MCB 样本均精确解码。
+
+### 交易表
+
+```bnf
+trade-table ::= dynamic-array(TradeTier)
+TradeTier   ::= dynamic-array(TradeGroup) u32le-total-exp
+TradeGroup  ::= i32le-num-to-select dynamic-array(Trade)
+Trade       ::= dynamic-array(TradeItemList-wants)
+                dynamic-array(TradeItemList-gives)
+                u32le-trader-exp i32le-max-uses boolean-reward-exp i32le-weight
+```
+
+精确字段顺序由 `x-ordinal-index` 决定，上面的展开式列出了当前 schema 字段。`Trade Quantity` 存储为两个 `uint32 LE`（先 `min`，后 `max`），`TradeItemList` 以候选数量开始。当前 22 个 `tiers` 样本全部成功解码，且不会补入 `format_version`。
+
+## 当前包中的战利品表不是 MCB
+
+当前样本中，`loot_tables` 路径下共有 126 份 brarchive 报告，每份都是 `mcbEntries = 0`。其中 payload 是普通 JSON，通过非 MCB 路径复制或格式化。战利品表 JSON 通常没有 `format_version`，但这不需要另一套 MCB 解码规则，因为这些样本根本不会进入 MCB 解码器。
+
+此前看起来相近的失败实际是村民交易表。其文档类型为 `tiers`；旧解码器不知道 `Trade Table` 根别名，也不支持数组根，所以才会失败。
+
+## 已知缺失 Schema：Camera Entity
+
+当前仍有一个样本被有意保留为未还原状态：
+
+```text
+resource_packs/vanilla/__brarchive/cameras.brarchive :: death.json
+文档类型：minecraft:camera_entity
+```
+
+其 payload 以标识符 `minecraft:death_camera` 开始，随后是值为 13 的 `uint32 LE` 组件数量和哈希组件 payload。BDS 导出中存在 `CameraDefinitions.json` 及各组件 schema，但不存在描述 description 字段、组件容器、根标题和输出外层结构的 `minecraft:camera_entity` 根 schema。
+
+这些字节很像常见的 `description + components` 文档，但自行合成根 schema 超出了导出 schema 契约，只能算推测。因此 `brax` 会报告 `missing-schema` 并保留原 MCB。未来 BDS 导出若包含根 schema，或通过游戏注册代码独立确认该根结构，就可以在不降低校验强度的前提下支持它。
+
+## 失败边界
+
+解码器区分以下重要类别：
+
+| 失败 | 含义 |
+|---|---|
+| `invalid-mcb` | 魔数或基本文件身份错误 |
+| `missing-schema` | 根、`$ref`、组件哈希或 schema 片段缺失 |
+| `unsupported-schema` | 元数据存在，但不能确定受支持的二进制产生式 |
+| `decode-error` | 字节违反所选产生式、UTF-8、边界、布尔、枚举或数量规则 |
+| `trailing-data` | 局部解码成功，但没有消费完整 payload |
+
+除非用户明确要求丢弃失败文件，否则所有类别的正确回退都是保留原 MCB。输出部分或猜测的 JSON 会掩盖 schema 确定性真正结束的位置。
+
+## 当前样本覆盖情况
+
+使用当前完整 preview 版行为包和资源包：
+
+| 文档类型 | MCB 文件 | 成功还原 | 剩余失败 |
+|---|---:|---:|---:|
+| `particle_effect` | 200 | 200 | 0 |
+| `minecraft:voxel_shape` | 218 | 218 | 0 |
+| `minecraft:item` | 23 | 23 | 0 |
+| `tiers` | 22 | 22 | 0 |
+| `minecraft:camera_entity` | 1 | 0 | 1 个缺失根 schema |
+| **总计** | **464** | **463** | **1** |
+
+“成功”表示 schema 驱动的解码器精确到达 EOF，并且结果能够序列化为 JSON；它不表示原始格式、注释或显式默认值选择能够恢复。

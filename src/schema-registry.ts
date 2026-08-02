@@ -51,6 +51,12 @@ function normalizeTitle(value: string): string {
   return value.trim().replaceAll('%20', ' ').toLocaleLowerCase('en-US')
 }
 
+const ROOT_TITLE_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  'minecraft:item': ['item document'],
+  'minecraft:voxel_shape': ['voxelshapefile'],
+  tiers: ['trade table'],
+}
+
 function parseNumericVersion(value: string | undefined): number[] | undefined {
   if (value === undefined || !/^\d+(?:\.\d+)*$/.test(value)) {
     return undefined
@@ -197,7 +203,9 @@ export class SchemaRegistry {
   }
 
   selectRoot(documentType: string, mcbVersion: string): SchemaDocument {
-    const candidates = this.#byTitle.get(normalizeTitle(documentType)) ?? []
+    const normalizedType = normalizeTitle(documentType)
+    const titles = [normalizedType, ...(ROOT_TITLE_ALIASES[normalizedType] ?? [])]
+    const candidates = titles.flatMap(title => this.#byTitle.get(title) ?? [])
     if (candidates.length === 0) {
       throw new ToolError('missing-schema', `No root schema found for document type ${JSON.stringify(documentType)}`)
     }

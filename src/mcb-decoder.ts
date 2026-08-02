@@ -4,8 +4,19 @@ import { type JsonSchema, type SchemaDocument, SchemaRegistry } from './schema-r
 
 const MCB_MAGIC = 0x42434d7f
 const MAX_CONTAINER_ITEMS = 1_000_000
-const IMPLICIT_BINARY_VARIANTS = new Set(['particle_appearance_tinting color_data'])
-const ARRAY_REPRESENTATION_UNIONS = new Set(['vectorevents', 'color_expr', 'particle_motion_collision_event_vector'])
+
+// Some exported oneOf schemas describe JSON spellings while the binary stores one normalized representation.
+const IMPLICIT_BINARY_VARIANTS = new Set(['particle_appearance_tinting color_data', 'particle_curve'])
+const ARRAY_REPRESENTATION_UNIONS = new Set([
+  'vectorevents',
+  'color_expr',
+  'particle_motion_collision_event_vector',
+  'vec3',
+])
+const OBJECT_REPRESENTATION_UNIONS = new Set(['item descriptor', 'minecraft:icon v1.21.80', 'trade quantity'])
+const BOOLEAN_REPRESENTATION_UNIONS = new Set(['minecraft:hand_equipped'])
+const INTEGER_REPRESENTATION_UNIONS = new Set(['minecraft:max_stack_size'])
+const FORMAT_VERSIONLESS_DOCUMENTS = new Set(['tiers'])
 
 export interface McbHeader {
   major: number
@@ -72,12 +83,6 @@ export class McbDecoder {
     const root = this.registry.selectRoot(documentType, version)
 
     const decoded = this.#decodeNode(root.schema, root, `$.${documentType}`)
-    if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) {
-      throw new ToolError('unsupported-schema', `Root schema ${root.id} did not decode to an object`, {
-        offset: this.#reader.offset,
-        schemaPath: `$.${documentType}`,
-      })
-    }
     if (this.#reader.remaining !== 0) {
       throw new ToolError(
         'trailing-data',
@@ -87,14 +92,14 @@ export class McbDecoder {
     }
 
     const formatVersion = root.version ?? version
+    const value: Record<string, unknown> = FORMAT_VERSIONLESS_DOCUMENTS.has(documentType.toLocaleLowerCase('en-US'))
+      ? { [documentType]: decoded }
+      : { format_version: formatVersion, [documentType]: decoded }
     return {
       header: { major, minor, patch, version, documentType },
       schemaId: root.id,
       schemaVersion: root.version,
-      value: {
-        format_version: formatVersion,
-        [documentType]: decoded,
-      },
+      value,
     }
   }
 
@@ -158,8 +163,26 @@ export class McbDecoder {
   #decodeOneOf(schema: JsonSchema, document: SchemaDocument, schemaPath: string): unknown {
     const variants = schema.oneOf!
     const title = schema.title?.toLocaleLowerCase('en-US') ?? ''
+
+    if (title === 'tradeitemlist') {
+      const itemSchema = variants[0]
+      if (itemSchema === undefined) {
+        throw new ToolError('unsupported-schema', 'TradeItemList schema has no direct item branch', {
+          offset: this.#reader.offset,
+          schemaPath,
+        })
+      }
+      const count = this.#readContainerCount(schemaPath)
+      const items: unknown[] = []
+      for (let index = 0; index < count; index += 1) {
+        items.push(this.#decodeNode(itemSchema, document, `${schemaPath}.choice[${index}]`))
+      }
+      return count === 1 ? items[0] : { choice: items }
+    }
+
     const usesBinaryOrdinal =
-      variants.some(variant => typeof variant['x-ordinal-index'] === 'number') || IMPLICIT_BINARY_VARIANTS.has(title)
+      variants.some(variant => typeof variant['x-ordinal-index'] === 'number') ||
+      IMPLICIT_BINARY_VARIANTS.has(title)
 
     if (usesBinaryOrdinal) {
       const tagOffset = this.#reader.offset
@@ -185,6 +208,27 @@ export class McbDecoder {
       const arrayVariant = variants.find(variant => schemaType(variant) === 'array')
       if (arrayVariant !== undefined) {
         return this.#decodeNode(arrayVariant, document, schemaPath)
+      }
+    }
+
+    if (OBJECT_REPRESENTATION_UNIONS.has(title)) {
+      const objectVariant = variants.find(variant => schemaType(variant) === 'object')
+      if (objectVariant !== undefined) {
+        return this.#decodeNode(objectVariant, document, schemaPath)
+      }
+    }
+
+    if (BOOLEAN_REPRESENTATION_UNIONS.has(title)) {
+      const booleanVariant = variants.find(variant => schemaType(variant) === 'boolean')
+      if (booleanVariant !== undefined) {
+        return this.#decodeNode(booleanVariant, document, schemaPath)
+      }
+    }
+
+    if (INTEGER_REPRESENTATION_UNIONS.has(title)) {
+      const integerVariant = variants.find(variant => schemaType(variant) === 'integer')
+      if (integerVariant !== undefined) {
+        return this.#decodeNode(integerVariant, document, schemaPath)
       }
     }
 

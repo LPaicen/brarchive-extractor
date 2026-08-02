@@ -2,28 +2,105 @@
 
 [Simplified Chinese](./zh/mcb-format.md)
 
-MCB is a schema-driven binary document format used by Minecraft Bedrock. Its fixed header contains only a version and document type. The following payload does not contain self-describing field names, so it requires BDS JSON schemas matching the document type and version.
+MCB is Minecraft Bedrock's schema-driven binary document format. It is neither compressed JSON nor a self-describing object stream: the header identifies a document type and version, while the payload stores values without JSON field names. Correct restoration therefore requires both the bytes and a compatible Cereal schema exported by [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs).
 
-This document records the layout implemented from reverse engineering and fixture regression tests. Other game versions or document types may introduce encoding rules that are not covered here. Unknown constructs must fail while preserving the original data rather than producing speculative JSON.
+This document describes the format implemented by `brax`, based on Bedrock reader reverse engineering, BDS schema metadata, and exact-consumption tests against the bundled preview resource and behavior packs. Rules that are not supported by evidence are rejected instead of guessed.
 
-## Fixed Header
+## Grammar Notation
 
-All fixed-width integers are little-endian:
+The grammar below is a binary pseudo-BNF. Concatenation means that values are adjacent in the byte stream. `S`, `P`, and `T` are schema parameters rather than stored bytes.
 
-| Offset | Size | Type | Meaning |
+```bnf
+octet       ::= one byte
+u8          ::= octet
+i8          ::= octet
+u16le       ::= octet octet
+i16le       ::= octet octet
+u32le       ::= octet octet octet octet
+i32le       ::= octet octet octet octet
+u64le       ::= octet octet octet octet octet octet octet octet
+i64le       ::= octet octet octet octet octet octet octet octet
+f32le       ::= four-byte IEEE-754 binary32, little-endian
+f64le       ::= eight-byte IEEE-754 binary64, little-endian
+bytes(N)    ::= octet repeated N times
+value(S)    ::= the production selected by schema S
+value(S)*N  ::= value(S) repeated N times
+EOF         ::= no bytes remain
+```
+
+All fixed-width multi-byte values are little-endian.
+
+## Complete File
+
+```bnf
+mcb-file      ::= magic semantic-version document-type root-payload EOF
+magic         ::= %x7F %x4D %x43 %x42
+semantic-version ::= u16le-major u16le-minor u32le-patch
+document-type ::= string
+root-payload  ::= value(select-root(document-type, semantic-version))
+```
+
+| Offset | Size | Encoding | Meaning |
 |---:|---:|---|---|
-| `0x00` | 4 | `uint32 LE` | Magic `0x42434D7F`; file bytes are `7F 4D 43 42` |
-| `0x04` | 2 | `uint16 LE` | Major version |
-| `0x06` | 2 | `uint16 LE` | Minor version |
-| `0x08` | 4 | `uint32 LE` | Patch version |
-| `0x0C` | variable | string | Document type |
-| following | variable | schema payload | Binary root object |
+| `0x00` | 4 | literal bytes | `7F 4D 43 42`, or `0x42434D7F` as a `uint32 LE` |
+| `0x04` | 2 | `uint16 LE` | major version |
+| `0x06` | 2 | `uint16 LE` | minor version |
+| `0x08` | 4 | `uint32 LE` | patch version |
+| `0x0C` | variable | `string` | document type |
+| following | variable | schema-defined | root payload |
 
-The version is represented as `major.minor.patch`. The document type is commonly a value such as `particle_effect` or `minecraft:voxel_shape` and is matched against schema `title` values.
+For example, the prefix below represents version `1.26.10` and document type `particle_effect`:
+
+```hex
+7F 4D 43 42  01 00  1A 00  0A 00 00 00
+0F 70 61 72 74 69 63 6C 65 5F 65 66 66 65 63 74
+```
+
+The final `EOF` check is important. A decoder can produce plausible values after choosing a wrong branch, but any trailing bytes prove that the selected schema path did not describe the complete payload.
+
+## Schema Root Selection
+
+The schema export root must contain:
+
+```text
+exist.json
+contents.json
+metadata/json_schemas/
+```
+
+`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, resolves relative `$ref` and JSON Pointer fragments, and groups root candidates by `title`. For numeric versions, it chooses the newest `x-format-version` not newer than the MCB header. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption.
+
+Most document types equal the root schema title. The BDS export currently requires these confirmed aliases:
+
+| MCB document type | BDS schema title | Restored top-level member |
+|---|---|---|
+| `particle_effect` | `particle_effect` | `particle_effect` |
+| `minecraft:voxel_shape` | `VoxelShapeFile` | `minecraft:voxel_shape` |
+| `minecraft:item` | `Item Document` | `minecraft:item` |
+| `tiers` | `Trade Table` | `tiers` |
+
+The decoded schema value is wrapped under the original MCB document type. Documents normally also receive `format_version` from the selected schema. `tiers` is a confirmed exception: its root schema is an array and the source JSON is `{ "tiers": [...] }` without `format_version`.
+
+```bnf
+normal-root-json ::= {
+  "format_version": selected-schema-version,
+  document-type: root-payload
+}
+
+trade-root-json ::= { "tiers": root-payload }
+```
+
+The wrapper is reconstructed metadata; indentation, comments, original property-writing order, and whether a default was explicitly written cannot be recovered.
 
 ## VarUInt32
 
-Dynamic lengths and container counts use an unsigned LEB128-style `VarUInt32`. Each byte stores seven data bits, and its high bit indicates that another byte follows. The value uses at most five bytes.
+```bnf
+varuint32 ::= continuation-octet* final-octet
+continuation-octet ::= octet with bit 7 set
+final-octet        ::= octet with bit 7 clear
+```
+
+Each byte contributes its low seven bits, least-significant group first:
 
 ```text
 result = 0
@@ -35,127 +112,294 @@ for i in 0 .. 4:
 error
 ```
 
-The fifth byte cannot contain high data bits outside the uint32 range.
+At most five bytes are accepted, and the fifth byte may only contribute the low four bits. Strings, dynamic arrays, ordinary maps, and normalized trade item lists use this encoding for their lengths or counts.
 
-## Strings
+## Numeric Types
 
-A string is encoded as:
+The JSON schema keyword `x-underlying-type` selects the stored width:
 
-```text
-VarUInt32 utf8_byte_length
-byte[utf8_byte_length] utf8_data
+```bnf
+numeric(uint8)  ::= u8
+numeric(int8)   ::= i8
+numeric(uint16) ::= u16le
+numeric(int16)  ::= i16le
+numeric(uint32) ::= u32le
+numeric(int32)  ::= i32le
+numeric(uint64) ::= u64le
+numeric(int64)  ::= i64le
+numeric(float)  ::= f32le
+numeric(double) ::= f64le
 ```
 
-Strings do not have a NUL terminator. The length is a UTF-8 byte count, not a Unicode character count. Invalid UTF-8 is a decoding error.
+| Schema value | Bytes | Notes |
+|---|---:|---|
+| `uint8`, `int8` | 1 | raw integer |
+| `uint16`, `int16` | 2 | little-endian |
+| `uint32`, `int32` | 4 | little-endian |
+| `uint64`, `int64` | 8 | little-endian |
+| `float` | 4 | IEEE-754 binary32 |
+| `double` | 8 | IEEE-754 binary64 |
 
-## Schema Selection
+Non-finite floats are rejected because JSON cannot represent them. Integers outside JavaScript's safe integer range are emitted as decimal strings rather than silently losing precision. A numeric schema without a supported `x-underlying-type` is not decodable.
 
-The schema root is generated by [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) and must contain:
+## Booleans
 
-```text
-exist.json
-contents.json
-metadata/json_schemas/
+```bnf
+boolean ::= %x00 | %x01
 ```
 
-`exist.json` normally contains the BDS export version and build version. `contents.json` describes exported root content. The tool requires both markers so an arbitrary schema subdirectory is not mistaken for an export root.
+`00` is `false` and `01` is `true`. Other byte values are errors. The same encoding is used for ordinary boolean values and optional-field presence markers.
 
-The tool recursively loads schemas with `$id` values under `metadata/json_schemas` and then:
+## Strings and String Enums
 
-1. matches the MCB document type to schema `title`;
-2. reads `x-format-version`;
-3. selects the newest numeric schema version that does not exceed the MCB header version, when possible;
-4. resolves `$ref` and JSON Pointer references;
-5. interprets the payload using extensions such as `x-ordinal-index` and `x-underlying-type`.
+```bnf
+string      ::= varuint32-length utf8-bytes(length)
+string-enum ::= string
+```
 
-## Object Fields
+The length counts UTF-8 bytes, not Unicode characters, and there is no trailing NUL. Invalid UTF-8 is rejected. String enums have no numeric tag in the confirmed schemas: they remain strings in MCB and are validated against the schema's `enum` after decoding.
 
-JSON property names are not stored in MCB. Fields appear in ascending `x-ordinal-index` order. Duplicate ordinals or missing required ordinal metadata prevent reliable decoding.
+Example:
 
-Field-presence rules are:
+```hex
+0F 70 61 72 74 69 63 6C 65 5F 65 66 66 65 63 74
+```
 
-- a `required` field is always present;
-- a field with an explicit schema `default` is always present;
-- every other field starts with a `uint8` presence marker, where `0` means absent and `1` means a value follows;
-- any other presence value indicates damaged data.
+`0F` is the byte length and the following 15 bytes decode to `particle_effect`.
 
-Objects normally have no total byte length, so an incorrect field order misaligns every later value.
+## Objects and Fields
 
-## Numbers
+Object property names are absent from MCB. Properties are decoded in ascending `x-ordinal-index` order.
 
-Number width is determined by `x-underlying-type`. The current implementation supports:
+```bnf
+object(S) ::= field(P0) field(P1) ... field(Pn)
+             ; P0..Pn sorted by x-ordinal-index
 
-| Underlying type | Encoding |
-|---|---|
-| `uint8` / `int8` | 1 byte |
-| `uint16` / `int16` | 2 bytes, little-endian |
-| `uint32` / `int32` | 4 bytes, little-endian |
-| `uint64` / `int64` | 8 bytes, little-endian |
-| `float` | IEEE-754 float32, little-endian |
-| `double` | IEEE-754 float64, little-endian |
+field(required-or-default P) ::= value(P)
+field(optional P)            ::= presence(P)
+presence(P)                  ::= %x00 | %x01 value(P)
+```
 
-An integer outside JavaScript's safe integer range is emitted as a decimal string. NaN and infinity are rejected.
+A property is unconditional when its name appears in the parent schema's `required` array or the property schema contains an explicit `default`. Every other property has a one-byte presence marker. In this binary schema, `default` therefore means that storage is unconditional; the decoder does not synthesize a missing default value.
 
-## Booleans and Enums
+Objects have no field count and usually no byte length. Missing or duplicate ordinal metadata is therefore fatal: choosing the wrong order misaligns every following value. A schema object with no properties and no `additionalProperties` consumes zero bytes.
 
-A boolean occupies one byte and accepts only `0` or `1`. String enums in current fixtures remain ordinary MCB strings; the decoded value is then checked against the schema `enum` list.
+## Arrays and Tuples
 
-## Arrays
+Three layouts are supported.
 
-Three array forms are known:
+Tuple schemas store each position directly and have no count:
 
-- tuple: schema `items` is an array, so items are read in schema order with no stored count;
-- fixed array: `minItems == maxItems`, so the schema supplies the count;
-- dynamic array: a `VarUInt32 count` is followed by `count` values using one item schema.
+```bnf
+tuple([S0, S1, ... Sn]) ::= value(S0) value(S1) ... value(Sn)
+```
 
-The decoder limits container counts so damaged input cannot cause an unbounded loop or excessive allocation.
+Fixed arrays are identified by equal `minItems` and `maxItems`:
+
+```bnf
+fixed-array(S, N) ::= value(S)*N
+```
+
+Other homogeneous arrays store a VarUInt32 count:
+
+```bnf
+dynamic-array(S) ::= varuint32-count value(S)*count
+```
+
+The decoder limits counts to 1,000,000 items. For example, voxel-shape `boxes` is dynamic even though the schema constrains it to 1-32 entries, while each `vec3` inside a box is a fixed array of exactly three float32 values.
 
 ## Maps
 
-A dynamic map starts with `VarUInt32 count`, followed by repeated key and value pairs. Current key types are:
+A schema object with no named properties and an object-valued `additionalProperties` is stored as a dynamic map:
 
-- `string`: an MCB string;
-- `float`: float32;
-- `int32`: little-endian int32.
-
-The value uses the schema in `additionalProperties`. Duplicate keys are decoding errors.
-
-## `oneOf` and Variants
-
-A true binary variant normally begins with a `uint8` tag. The tag selects a `oneOf` branch by `x-ordinal-index`; some confirmed types fall back to the branch index when no explicit ordinal is present.
-
-Some `oneOf` declarations only describe multiple accepted JSON spellings even though the binary representation is already normalized. Molang strings, color expressions, and certain vector types may therefore omit a variant tag and always use a confirmed internal representation. If the branch cannot be determined from schema metadata or a confirmed rule, the decoder reports `unsupported-schema`.
-
-## Component Tables
-
-Component storage is not an ordinary ordinal object. The confirmed layout is:
-
-```text
-uint32_le component_count
-repeat component_count times:
-    uint32_le component_name_hash
-    component_payload
+```bnf
+map(K, V) ::= varuint32-count map-entry(K, V)*count
+map-entry(K, V) ::= map-key(K) value(V)
+map-key(string) ::= string
+map-key(float)  ::= f32le
+map-key(int32)  ::= i32le
 ```
 
-The hash is 32-bit FNV-1a over the UTF-8 bytes of the complete component name. The tool precomputes hashes for all component names in the schema and uses the stored hash to select a component schema. An unknown hash, duplicate component, or FNV-1a collision is an error.
+The key encoding is selected by `x-key-underlying-type`, defaulting to `string`. Duplicate keys are rejected because JSON object restoration would otherwise discard data.
 
-## Root Object and Trailing-Data Validation
+An `Item Descriptor` demonstrates normalized map storage. The bytes below are a one-entry descriptor:
 
-After decoding, the root value must be a JSON object and the reader offset must exactly equal the MCB file length. Remaining bytes produce `trailing-data`, which normally indicates a schema-version mismatch, incorrect field order, or an unsupported encoding rule.
-
-Restored JSON receives a top-level `format_version` from the selected schema's `x-format-version`. MCB does not preserve original JSON indentation, comments, property-writing order, or the distinction between explicit default values and defaults inserted during compilation. Restoration is semantic and cannot guarantee byte-for-byte reproduction of the source JSON.
-
-## Minimal Decoding Flow
-
-```text
-assert read_u32le() == 0x42434D7F
-major         = read_u16le()
-minor         = read_u16le()
-patch         = read_u32le()
-document_type = read_string()
-schema        = select_schema(document_type, major.minor.patch)
-value         = decode_node(schema)
-assert reader_offset == file_length
+```hex
+01                         ; map count
+04 6E 61 6D 65             ; key "name"
+15 6D 69 6E 65 ... 62 6F 78 ; value "minecraft:shulker_box"
 ```
 
-When a schema is missing, a component is unknown, or a schema construct is unsupported, the correct behavior is to preserve the original MCB and report the reason.
+## Component Storage
+
+Objects whose schema properties are component names such as `minecraft:icon` and have no ordinals use a separate hash table layout:
+
+```bnf
+component-storage(S) ::= u32le-count component-entry(S)*count
+component-entry(S)   ::= u32le-name-hash value(component-schema(name-hash))
+```
+
+The key is 32-bit FNV-1a over the UTF-8 bytes of the complete component name:
+
+```text
+hash = 0x811C9DC5
+for byte in utf8(component_name):
+    hash = hash XOR byte
+    hash = (hash * 0x01000193) modulo 2^32
+```
+
+There is no component payload length. The hash must resolve to a component schema before the next offset can be known. Unknown hashes, duplicate components, or a hash collision are reported instead of skipped.
+
+## `oneOf`: Tagged Binary Variants
+
+A true binary variant stores a one-byte discriminator:
+
+```bnf
+tagged-one-of(S) ::= u8-tag value(branch(S, tag))
+```
+
+When branches have `x-ordinal-index`, the tag selects that ordinal. Confirmed schema types whose exported branches omit ordinals but whose bytes still contain a zero-based tag are:
+
+| Schema title | Tag behavior |
+|---|---|
+| `particle_curve` | `0` selects linear, `1` selects bezier-chain |
+| `particle_appearance_tinting color_data` | zero-based branch index |
+
+At a particle-curve boundary, the sample bytes begin:
+
+```hex
+00 06 6C 69 6E 65 61 72 ...
+```
+
+`00` selects the linear branch; `06 "linear"` is the first field of that branch. Treating `00` as part of a string or presence marker would misalign the curve.
+
+## `oneOf`: Normalized Representations
+
+Some `oneOf` schemas describe alternative JSON spellings, not alternative binary layouts. The compiled C++ value has one normalized representation and no discriminator. `brax` uses the following fixture-confirmed rules:
+
+| Schema title | Binary production selected | Restored representation |
+|---|---|---|
+| `Molang String` | `string` branch | string |
+| `VectorEvents` | array branch | array |
+| `color_expr` | array branch | array |
+| `particle_motion_collision_event_vector` | array branch | array |
+| `vec3` | fixed array branch | `[x, y, z]` |
+| `minecraft:icon v1.21.80` | object/map branch | object |
+| `Item Descriptor` | object/map branch | object |
+| `Trade Quantity` | object branch | `{min, max}` |
+| `minecraft:hand_equipped` | boolean branch | boolean |
+| `minecraft:max_stack_size` | integer branch | integer |
+
+Their grammar is simply the selected branch, with no leading tag:
+
+```bnf
+normalized-one-of(S) ::= value(confirmed-normalized-branch(S))
+```
+
+For example, a `minecraft:max_stack_size` value of 64 is `40 00` (`int16 LE`), not `tag + 40 00`. Likewise, a `vec3` is three adjacent float32 values with neither a branch tag nor an array count.
+
+### Trade Item Lists
+
+`TradeItemList` has its own normalized container layout:
+
+```bnf
+trade-item-list ::= varuint32-count value(TradeItem)*count
+```
+
+The count is not a `oneOf` tag. A count of one restores the direct `TradeItem` branch; any other count restores `{ "choice": [...] }`. Counts of `3`, `4`, `8`, and `9` in wandering-trader samples are therefore candidate-list sizes, not unknown discriminators.
+
+## Confirmed Document Payloads
+
+The generic rules compose into the document types present in the current full preview packs.
+
+### Particle Effects
+
+```bnf
+particle-effect ::= object(Particle_Effect_Data)
+components      ::= component-storage(ParticleComponents)
+curves          ::= map(string, particle_curve)
+```
+
+Particles exercise ordinal objects, component hashes, Molang values, maps, arrays, tagged curves, and normalized JSON representations. All 200 current particle MCB samples consume exactly to EOF.
+
+### Voxel Shapes
+
+```bnf
+voxel-shape-file ::= description shape
+description      ::= string-identifier
+shape            ::= dynamic-array(Box)
+Box              ::= vec3-min vec3-max
+vec3             ::= f32le f32le f32le
+```
+
+The actual fields are supplied by `VoxelShapeFile`, `Description`, `Shape`, and `Box` schemas. All 218 samples decode with the `minecraft:voxel_shape` to `VoxelShapeFile` root alias.
+
+### Items
+
+```bnf
+item-document ::= description component-storage(ItemComponents)
+description   ::= schema-ordered item description fields
+```
+
+Item components add normalized `icon`, `hand_equipped`, `max_stack_size`, and `Item Descriptor` values. All 23 current item MCB samples decode exactly.
+
+### Trade Tables
+
+```bnf
+trade-table ::= dynamic-array(TradeTier)
+TradeTier   ::= dynamic-array(TradeGroup) u32le-total-exp
+TradeGroup  ::= i32le-num-to-select dynamic-array(Trade)
+Trade       ::= dynamic-array(TradeItemList-wants)
+                dynamic-array(TradeItemList-gives)
+                u32le-trader-exp i32le-max-uses boolean-reward-exp i32le-weight
+```
+
+The precise field order comes from `x-ordinal-index`; the expanded production above names the current schema fields. `Trade Quantity` is stored as two `uint32 LE` values (`min`, then `max`), and `TradeItemList` begins with a candidate count. All 22 current `tiers` samples decode without adding `format_version`.
+
+## Loot Tables Are Not MCB in the Current Packs
+
+The current fixture set contains 126 brarchive reports under `loot_tables`; every one reports `mcbEntries = 0`. Their payloads are ordinary JSON and are copied or formatted through the non-MCB path. Loot-table JSON commonly has no `format_version`, but that does not require a different MCB decoder because these samples never enter MCB decoding.
+
+The similarly named failures seen before this analysis were villager trade tables. Their document type is `tiers`, and the old decoder failed because it did not know the `Trade Table` root alias or array-root layout.
+
+## Known Missing Schema: Camera Entity
+
+One current sample remains intentionally unrestored:
+
+```text
+resource_packs/vanilla/__brarchive/cameras.brarchive :: death.json
+document type: minecraft:camera_entity
+```
+
+Its payload begins with the identifier `minecraft:death_camera`, followed by a `uint32 LE` component count of 13 and hashed component payloads. The BDS export contains `CameraDefinitions.json` and individual component schemas, but no root schema for `minecraft:camera_entity` describing its description field, component container, root title, and output wrapper.
+
+Those bytes strongly suggest a familiar `description + components` document, but synthesizing that root would be an inference outside the exported schema contract. `brax` therefore reports `missing-schema` and preserves the original MCB. A future BDS export containing the root schema, or independently confirmed game schema registration, can make this case decodable without weakening validation.
+
+## Failure Boundaries
+
+The decoder distinguishes these important classes:
+
+| Failure | Meaning |
+|---|---|
+| `invalid-mcb` | magic or basic file identity is wrong |
+| `missing-schema` | root, `$ref`, component hash, or schema fragment is unavailable |
+| `unsupported-schema` | metadata exists but does not determine a supported binary production |
+| `decode-error` | bytes violate the selected production, UTF-8, bounds, boolean, enum, or count rules |
+| `trailing-data` | decoding succeeded locally but did not consume the complete payload |
+
+The correct fallback for every class is to keep the original MCB unless the user explicitly requests failed files to be discarded. Producing partial or guessed JSON would hide the exact point where schema certainty ended.
+
+## Current Fixture Coverage
+
+With the current full preview behavior and resource packs:
+
+| Document type | MCB files | Restored | Remaining failure |
+|---|---:|---:|---:|
+| `particle_effect` | 200 | 200 | 0 |
+| `minecraft:voxel_shape` | 218 | 218 | 0 |
+| `minecraft:item` | 23 | 23 | 0 |
+| `tiers` | 22 | 22 | 0 |
+| `minecraft:camera_entity` | 1 | 0 | 1 missing root schema |
+| **Total** | **464** | **463** | **1** |
+
+Success means the schema-directed decoder reached EOF exactly and the restored value could be serialized as JSON. It does not mean that original formatting, comments, or explicit-default choices were recoverable.
