@@ -14,13 +14,13 @@ function mcbString(value: string): Buffer {
   return Buffer.concat([Buffer.from([bytes.length]), bytes])
 }
 
-function makeMcb(documentType: string, payload: Buffer, version: readonly [number, number, number] = [1, 26, 30]): Buffer {
+function makeMcb(payloadKey: string, payload: Buffer, formatVersion: readonly [number, number, number] = [1, 26, 30]): Buffer {
   const header = Buffer.alloc(12)
   header.writeUInt32LE(0x42434d7f, 0)
-  header.writeUInt16LE(version[0], 4)
-  header.writeUInt16LE(version[1], 6)
-  header.writeUInt32LE(version[2], 8)
-  return Buffer.concat([header, mcbString(documentType), payload])
+  header.writeUInt16LE(formatVersion[0], 4)
+  header.writeUInt16LE(formatVersion[1], 6)
+  header.writeUInt32LE(formatVersion[2], 8)
+  return Buffer.concat([header, mcbString(payloadKey), payload])
 }
 
 function makeArchive(entries: Array<{ name: string; payload: Buffer }>): Buffer {
@@ -67,7 +67,15 @@ test('McbDecoder uses ordinal order, defaults and optional presence', async () =
 
     const payload = makeMcb('test_document', Buffer.concat([mcbString('hello'), Buffer.from([1, 0])]), [1, 0, 0])
     const decoder = new McbDecoder(await SchemaRegistry.load(root))
-    assert.deepEqual(decoder.decode(payload).value, {
+    const decoded = decoder.decode(payload)
+    assert.deepEqual(decoded.header, {
+      major: 1,
+      minor: 0,
+      patch: 0,
+      formatVersion: '1.0.0',
+      payloadKey: 'test_document',
+    })
+    assert.deepEqual(decoded.value, {
       format_version: '1.0.0',
       test_document: { name: 'hello', enabled: true },
     })

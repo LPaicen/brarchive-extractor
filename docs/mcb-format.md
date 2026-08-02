@@ -2,7 +2,7 @@
 
 [Simplified Chinese](./zh/mcb-format.md)
 
-MCB is Minecraft Bedrock's schema-driven binary document format. It is neither compressed JSON nor a self-describing object stream: the header identifies a document type and version, while the payload stores values without JSON field names. Correct restoration therefore requires both the bytes and a compatible Cereal schema exported by [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs).
+MCB is Minecraft Bedrock's schema-driven binary document format. It is neither compressed JSON nor a self-describing object stream: the binary header contains a payload key and format version, while the payload stores values without JSON field names. Correct restoration therefore requires both the bytes and a compatible `cereal` schema exported by [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs).
 
 This document describes the format implemented by `brax`, based on Bedrock reader reverse engineering, BDS schema metadata, and exact-consumption tests against the bundled preview resource and behavior packs. Rules that are not supported by evidence are rejected instead of guessed.
 
@@ -33,23 +33,23 @@ All fixed-width multi-byte values are little-endian.
 ## Complete File
 
 ```bnf
-mcb-file      ::= magic semantic-version document-type root-payload EOF
+mcb-file      ::= magic format-version payload-key root-payload EOF
 magic         ::= %x7F %x4D %x43 %x42
-semantic-version ::= u16le-major u16le-minor u32le-patch
-document-type ::= string
-root-payload  ::= value(select-root(document-type, semantic-version))
+format-version ::= u16le-major u16le-minor u32le-patch
+payload-key   ::= string
+root-payload  ::= value(select-root(payload-key, format-version))
 ```
 
 | Offset | Size | Encoding | Meaning |
 |---:|---:|---|---|
 | `0x00` | 4 | literal bytes | `7F 4D 43 42`, or `0x42434D7F` as a `uint32 LE` |
-| `0x04` | 2 | `uint16 LE` | major version |
-| `0x06` | 2 | `uint16 LE` | minor version |
-| `0x08` | 4 | `uint32 LE` | patch version |
-| `0x0C` | variable | `string` | document type |
+| `0x04` | 2 | `uint16 LE` | format version major component |
+| `0x06` | 2 | `uint16 LE` | format version minor component |
+| `0x08` | 4 | `uint32 LE` | format version patch component |
+| `0x0C` | variable | `string` | payload key |
 | following | variable | schema-defined | root payload |
 
-For example, the prefix below represents version `1.26.10` and document type `particle_effect`:
+For example, the prefix below represents format version `1.26.10` and payload key `particle_effect`:
 
 ```hex
 7F 4D 43 42  01 00  1A 00  0A 00 00 00
@@ -68,23 +68,23 @@ contents.json
 metadata/json_schemas/
 ```
 
-`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, resolves relative `$ref` and JSON Pointer fragments, and groups root candidates by `title`. For numeric versions, it chooses the newest `x-format-version` not newer than the MCB header. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption.
+`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, resolves relative `$ref` and JSON Pointer fragments, and groups root candidates by `title`. For numeric versions, it chooses the newest `x-format-version` not newer than the MCB format version. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption.
 
-Most document types equal the root schema title. The BDS export currently requires these confirmed aliases:
+Most payload keys equal the root schema title. The BDS export currently requires these confirmed aliases:
 
-| MCB document type | BDS schema title | Restored top-level member |
+| MCB payload key | BDS schema title | Restored top-level member |
 |---|---|---|
 | `particle_effect` | `particle_effect` | `particle_effect` |
 | `minecraft:voxel_shape` | `VoxelShapeFile` | `minecraft:voxel_shape` |
 | `minecraft:item` | `Item Document` | `minecraft:item` |
 | `tiers` | `Trade Table` | `tiers` |
 
-The decoded schema value is wrapped under the original MCB document type. Documents normally also receive `format_version` from the selected schema. `tiers` is a confirmed exception: its root schema is an array and the source JSON is `{ "tiers": [...] }` without `format_version`.
+The decoded schema value is wrapped under the original MCB payload key. Documents normally also receive `format_version` from the selected schema. `tiers` is a confirmed exception: its root schema is an array and the source JSON is `{ "tiers": [...] }` without `format_version`.
 
 ```bnf
 normal-root-json ::= {
   "format_version": selected-schema-version,
-  document-type: root-payload
+  payload-key: root-payload
 }
 
 trade-root-json ::= { "tiers": root-payload }
@@ -230,16 +230,16 @@ An `Item Descriptor` demonstrates normalized map storage. The bytes below are a 
 15 6D 69 6E 65 ... 62 6F 78 ; value "minecraft:shulker_box"
 ```
 
-## Component Storage
+## `cereal::ComponentStorage`
 
-Objects whose schema properties are component names such as `minecraft:icon` and have no ordinals use a separate hash table layout:
+Objects backed by `cereal::ComponentStorage`, whose schema properties are component names such as `minecraft:icon` and have no ordinals, use the entry encoding handled by `cereal::internal::ComponentStorageCompositeSchema`:
 
 ```bnf
 component-storage(S) ::= u32le-count component-entry(S)*count
-component-entry(S)   ::= u32le-name-hash value(component-schema(name-hash))
+component-entry(S)   ::= u32le-component-id value(component-schema(component-id))
 ```
 
-The key is 32-bit FNV-1a over the UTF-8 bytes of the complete component name:
+The component ID is 32-bit FNV-1a over the UTF-8 bytes of the complete component name:
 
 ```text
 hash = 0x811C9DC5
@@ -248,11 +248,11 @@ for byte in utf8(component_name):
     hash = (hash * 0x01000193) modulo 2^32
 ```
 
-There is no component payload length. The hash must resolve to a component schema before the next offset can be known. Unknown hashes, duplicate components, or a hash collision are reported instead of skipped.
+There is no component payload length. The component ID must resolve to a component schema before the next offset can be known. Unknown component IDs, duplicate components, or an ID collision are reported instead of skipped.
 
-## `oneOf`: Tagged Binary Variants
+## `oneOf`: Tagged Variants
 
-A true binary variant stores a one-byte discriminator:
+A tagged variant stores a one-byte tag:
 
 ```bnf
 tagged-one-of(S) ::= u8-tag value(branch(S, tag))
@@ -275,7 +275,7 @@ At a particle-curve boundary, the sample bytes begin:
 
 ## `oneOf`: Normalized Representations
 
-Some `oneOf` schemas describe alternative JSON spellings, not alternative binary layouts. The compiled C++ value has one normalized representation and no discriminator. `brax` uses the following fixture-confirmed rules:
+Some `oneOf` schemas describe alternative JSON spellings, not alternative binary layouts. The compiled C++ value has one normalized representation and no variant tag. `brax` uses the following fixture-confirmed rules:
 
 | Schema title | Binary production selected | Restored representation |
 |---|---|---|
@@ -306,11 +306,11 @@ For example, a `minecraft:max_stack_size` value of 64 is `40 00` (`int16 LE`), n
 trade-item-list ::= varuint32-count value(TradeItem)*count
 ```
 
-The count is not a `oneOf` tag. A count of one restores the direct `TradeItem` branch; any other count restores `{ "choice": [...] }`. Counts of `3`, `4`, `8`, and `9` in wandering-trader samples are therefore candidate-list sizes, not unknown discriminators.
+The count is not a `oneOf` tag. A count of one restores the direct `TradeItem` branch; any other count restores `{ "choice": [...] }`. Counts of `3`, `4`, `8`, and `9` in wandering-trader samples are therefore candidate-list sizes, not unknown variant tags.
 
 ## Confirmed Document Payloads
 
-The generic rules compose into the document types present in the current full preview packs.
+The generic rules compose into the payload keys present in the current full preview packs.
 
 ### Particle Effects
 
@@ -320,7 +320,7 @@ components      ::= component-storage(ParticleComponents)
 curves          ::= map(string, particle_curve)
 ```
 
-Particles exercise ordinal objects, component hashes, Molang values, maps, arrays, tagged curves, and normalized JSON representations. All 200 current particle MCB samples consume exactly to EOF.
+Particles exercise ordinal objects, component IDs, Molang values, maps, arrays, tagged curves, and normalized JSON representations. All 200 current particle MCB samples consume exactly to EOF.
 
 ### Voxel Shapes
 
@@ -360,7 +360,7 @@ The precise field order comes from `x-ordinal-index`; the expanded production ab
 
 The current fixture set contains 126 brarchive reports under `loot_tables`; every one reports `mcbEntries = 0`. Their payloads are ordinary JSON and are copied or formatted through the non-MCB path. Loot-table JSON commonly has no `format_version`, but that does not require a different MCB decoder because these samples never enter MCB decoding.
 
-The similarly named failures seen before this analysis were villager trade tables. Their document type is `tiers`, and the old decoder failed because it did not know the `Trade Table` root alias or array-root layout.
+The similarly named failures seen before this analysis were villager trade tables. Their payload key is `tiers`, and the old decoder failed because it did not know the `Trade Table` root alias or array-root layout.
 
 ## Known Missing Schema: Camera Entity
 
@@ -368,10 +368,10 @@ One current sample remains intentionally unrestored:
 
 ```text
 resource_packs/vanilla/__brarchive/cameras.brarchive :: death.json
-document type: minecraft:camera_entity
+payload key: minecraft:camera_entity
 ```
 
-Its payload begins with the identifier `minecraft:death_camera`, followed by a `uint32 LE` component count of 13 and hashed component payloads. The BDS export contains `CameraDefinitions.json` and individual component schemas, but no root schema for `minecraft:camera_entity` describing its description field, component container, root title, and output wrapper.
+Its payload begins with the identifier `minecraft:death_camera`, followed by a `uint32 LE` component count of 13 and component IDs with their payloads. The BDS export contains `CameraDefinitions.json` and individual component schemas, but no root schema for `minecraft:camera_entity` describing its description field, component container, root title, and output wrapper.
 
 Those bytes strongly suggest a familiar `description + components` document, but synthesizing that root would be an inference outside the exported schema contract. `brax` therefore reports `missing-schema` and preserves the original MCB. A future BDS export containing the root schema, or independently confirmed game schema registration, can make this case decodable without weakening validation.
 
@@ -382,7 +382,7 @@ The decoder distinguishes these important classes:
 | Failure | Meaning |
 |---|---|
 | `invalid-mcb` | magic or basic file identity is wrong |
-| `missing-schema` | root, `$ref`, component hash, or schema fragment is unavailable |
+| `missing-schema` | root, `$ref`, component ID, or schema fragment is unavailable |
 | `unsupported-schema` | metadata exists but does not determine a supported binary production |
 | `decode-error` | bytes violate the selected production, UTF-8, bounds, boolean, enum, or count rules |
 | `trailing-data` | decoding succeeded locally but did not consume the complete payload |
@@ -393,7 +393,7 @@ The correct fallback for every class is to keep the original MCB unless the user
 
 With the current full preview behavior and resource packs:
 
-| Document type | MCB files | Restored | Remaining failure |
+| Payload key | MCB files | Restored | Remaining failure |
 |---|---:|---:|---:|
 | `particle_effect` | 200 | 200 | 0 |
 | `minecraft:voxel_shape` | 218 | 218 | 0 |

@@ -6,28 +6,28 @@ const MCB_MAGIC = 0x42434d7f
 const MAX_CONTAINER_ITEMS = 1_000_000
 
 // Some exported oneOf schemas describe JSON spellings while the binary stores one normalized representation.
-const IMPLICIT_BINARY_VARIANTS = new Set(['particle_appearance_tinting color_data', 'particle_curve'])
-const ARRAY_REPRESENTATION_UNIONS = new Set([
+const TAGGED_VARIANT_TITLES_WITHOUT_ORDINALS = new Set(['particle_appearance_tinting color_data', 'particle_curve'])
+const ARRAY_REPRESENTATION_VARIANTS = new Set([
   'vectorevents',
   'color_expr',
   'particle_motion_collision_event_vector',
   'vec3',
 ])
-const OBJECT_REPRESENTATION_UNIONS = new Set(['item descriptor', 'minecraft:icon v1.21.80', 'trade quantity'])
-const BOOLEAN_REPRESENTATION_UNIONS = new Set(['minecraft:hand_equipped'])
-const INTEGER_REPRESENTATION_UNIONS = new Set(['minecraft:max_stack_size'])
+const OBJECT_REPRESENTATION_VARIANTS = new Set(['item descriptor', 'minecraft:icon v1.21.80', 'trade quantity'])
+const BOOLEAN_REPRESENTATION_VARIANTS = new Set(['minecraft:hand_equipped'])
+const INTEGER_REPRESENTATION_VARIANTS = new Set(['minecraft:max_stack_size'])
 const FORMAT_VERSIONLESS_DOCUMENTS = new Set(['tiers'])
 
-export interface McbHeader {
+export interface BinaryHeader {
   major: number
   minor: number
   patch: number
-  version: string
-  documentType: string
+  formatVersion: string
+  payloadKey: string
 }
 
 export interface McbDecodeResult {
-  header: McbHeader
+  header: BinaryHeader
   schemaId: string
   schemaVersion?: string
   value: Record<string, unknown>
@@ -50,7 +50,7 @@ function fnv1a(value: string): number {
   return hash >>> 0
 }
 
-function formatHash(value: number): string {
+function formatHex32(value: number): string {
   return `0x${value.toString(16).padStart(8, '0').toUpperCase()}`
 }
 
@@ -72,31 +72,31 @@ export class McbDecoder {
     const magicOffset = this.#reader.offset
     const magic = this.#reader.readUint32('MCB magic')
     if (magic !== MCB_MAGIC) {
-      throw new ToolError('invalid-mcb', `Invalid MCB magic: ${formatHash(magic)}`, { offset: magicOffset })
+      throw new ToolError('invalid-mcb', `Invalid MCB magic: ${formatHex32(magic)}`, { offset: magicOffset })
     }
 
-    const major = this.#reader.readUint16('MCB major version')
-    const minor = this.#reader.readUint16('MCB minor version')
-    const patch = this.#reader.readUint32('MCB patch version')
-    const version = `${major}.${minor}.${patch}`
-    const documentType = this.#reader.readString('MCB document type')
-    const root = this.registry.selectRoot(documentType, version)
+    const major = this.#reader.readUint16('MCB format version major component')
+    const minor = this.#reader.readUint16('MCB format version minor component')
+    const patch = this.#reader.readUint32('MCB format version patch component')
+    const formatVersion = `${major}.${minor}.${patch}`
+    const payloadKey = this.#reader.readString('MCB payload key')
+    const root = this.registry.selectRoot(payloadKey, formatVersion)
 
-    const decoded = this.#decodeNode(root.schema, root, `$.${documentType}`)
+    const decoded = this.#decodeNode(root.schema, root, `$.${payloadKey}`)
     if (this.#reader.remaining !== 0) {
       throw new ToolError(
         'trailing-data',
-        `Root object left ${this.#reader.remaining} trailing bytes (read 0x${this.#reader.offset.toString(16)} / 0x${buffer.length.toString(16)})`,
-        { offset: this.#reader.offset, schemaPath: `$.${documentType}` },
+        `Root payload left ${this.#reader.remaining} trailing bytes (read 0x${this.#reader.offset.toString(16)} / 0x${buffer.length.toString(16)})`,
+        { offset: this.#reader.offset, schemaPath: `$.${payloadKey}` },
       )
     }
 
-    const formatVersion = root.version ?? version
-    const value: Record<string, unknown> = FORMAT_VERSIONLESS_DOCUMENTS.has(documentType.toLocaleLowerCase('en-US'))
-      ? { [documentType]: decoded }
-      : { format_version: formatVersion, [documentType]: decoded }
+    const outputFormatVersion = root.version ?? formatVersion
+    const value: Record<string, unknown> = FORMAT_VERSIONLESS_DOCUMENTS.has(payloadKey.toLocaleLowerCase('en-US'))
+      ? { [payloadKey]: decoded }
+      : { format_version: outputFormatVersion, [payloadKey]: decoded }
     return {
-      header: { major, minor, patch, version, documentType },
+      header: { major, minor, patch, formatVersion, payloadKey },
       schemaId: root.id,
       schemaVersion: root.version,
       value,
@@ -180,11 +180,11 @@ export class McbDecoder {
       return count === 1 ? items[0] : { choice: items }
     }
 
-    const usesBinaryOrdinal =
+    const usesVariantTag =
       variants.some(variant => typeof variant['x-ordinal-index'] === 'number') ||
-      IMPLICIT_BINARY_VARIANTS.has(title)
+      TAGGED_VARIANT_TITLES_WITHOUT_ORDINALS.has(title)
 
-    if (usesBinaryOrdinal) {
+    if (usesVariantTag) {
       const tagOffset = this.#reader.offset
       const tag = this.#reader.readUint8(`${schemaPath} oneOf tag`)
       const variant = variants.find((candidate, index) => (candidate['x-ordinal-index'] ?? index) === tag)
@@ -204,28 +204,28 @@ export class McbDecoder {
       }
     }
 
-    if (ARRAY_REPRESENTATION_UNIONS.has(title)) {
+    if (ARRAY_REPRESENTATION_VARIANTS.has(title)) {
       const arrayVariant = variants.find(variant => schemaType(variant) === 'array')
       if (arrayVariant !== undefined) {
         return this.#decodeNode(arrayVariant, document, schemaPath)
       }
     }
 
-    if (OBJECT_REPRESENTATION_UNIONS.has(title)) {
+    if (OBJECT_REPRESENTATION_VARIANTS.has(title)) {
       const objectVariant = variants.find(variant => schemaType(variant) === 'object')
       if (objectVariant !== undefined) {
         return this.#decodeNode(objectVariant, document, schemaPath)
       }
     }
 
-    if (BOOLEAN_REPRESENTATION_UNIONS.has(title)) {
+    if (BOOLEAN_REPRESENTATION_VARIANTS.has(title)) {
       const booleanVariant = variants.find(variant => schemaType(variant) === 'boolean')
       if (booleanVariant !== undefined) {
         return this.#decodeNode(booleanVariant, document, schemaPath)
       }
     }
 
-    if (INTEGER_REPRESENTATION_UNIONS.has(title)) {
+    if (INTEGER_REPRESENTATION_VARIANTS.has(title)) {
       const integerVariant = variants.find(variant => schemaType(variant) === 'integer')
       if (integerVariant !== undefined) {
         return this.#decodeNode(integerVariant, document, schemaPath)
@@ -338,16 +338,16 @@ export class McbDecoder {
 
   #decodeComponentStorage(schema: JsonSchema, document: SchemaDocument, schemaPath: string): Record<string, unknown> {
     const properties = schema.properties ?? {}
-    const byHash = new Map<number, { name: string; schema: JsonSchema }>()
+    const byComponentId = new Map<number, { name: string; schema: JsonSchema }>()
     for (const [name, componentSchema] of Object.entries(properties)) {
-      const hash = fnv1a(name)
-      if (byHash.has(hash)) {
-        throw new ToolError('unsupported-schema', `Component name FNV-1a collision: ${name} / ${byHash.get(hash)!.name}`, {
+      const componentId = fnv1a(name)
+      if (byComponentId.has(componentId)) {
+        throw new ToolError('unsupported-schema', `Component ID collision: ${name} / ${byComponentId.get(componentId)!.name}`, {
           offset: this.#reader.offset,
           schemaPath,
         })
       }
-      byHash.set(hash, { name, schema: componentSchema })
+      byComponentId.set(componentId, { name, schema: componentSchema })
     }
 
     const countOffset = this.#reader.offset
@@ -360,19 +360,19 @@ export class McbDecoder {
     }
     const result: Record<string, unknown> = {}
     for (let index = 0; index < count; index += 1) {
-      const hashOffset = this.#reader.offset
-      const hash = this.#reader.readUint32(`${schemaPath} component hash`)
-      const component = byHash.get(hash)
+      const componentIdOffset = this.#reader.offset
+      const componentId = this.#reader.readUint32(`${schemaPath} component ID`)
+      const component = byComponentId.get(componentId)
       if (component === undefined) {
         throw new ToolError(
           'missing-schema',
-          `Component ${formatHash(hash)} at ${schemaPath} has no matching schema (${byHash.size} component names loaded)`,
-          { offset: hashOffset, schemaPath },
+          `Component ID ${formatHex32(componentId)} at ${schemaPath} has no matching schema (${byComponentId.size} component names loaded)`,
+          { offset: componentIdOffset, schemaPath },
         )
       }
       if (hasOwn(result, component.name)) {
         throw new ToolError('decode-error', `${schemaPath} contains duplicate component ${component.name}`, {
-          offset: hashOffset,
+          offset: componentIdOffset,
           schemaPath,
         })
       }

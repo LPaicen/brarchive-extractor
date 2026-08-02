@@ -202,15 +202,15 @@ export class SchemaRegistry {
     return new SchemaRegistry(rootPath, exportVersion, documents)
   }
 
-  selectRoot(documentType: string, mcbVersion: string): SchemaDocument {
-    const normalizedType = normalizeTitle(documentType)
-    const titles = [normalizedType, ...(ROOT_TITLE_ALIASES[normalizedType] ?? [])]
+  selectRoot(payloadKey: string, mcbFormatVersion: string): SchemaDocument {
+    const normalizedPayloadKey = normalizeTitle(payloadKey)
+    const titles = [normalizedPayloadKey, ...(ROOT_TITLE_ALIASES[normalizedPayloadKey] ?? [])]
     const candidates = titles.flatMap(title => this.#byTitle.get(title) ?? [])
     if (candidates.length === 0) {
-      throw new ToolError('missing-schema', `No root schema found for document type ${JSON.stringify(documentType)}`)
+      throw new ToolError('missing-schema', `No root schema found for payload key ${JSON.stringify(payloadKey)}`)
     }
 
-    const target = parseNumericVersion(mcbVersion)
+    const target = parseNumericVersion(mcbFormatVersion)
     const numericCandidates = candidates
       .map(document => ({ document, version: parseNumericVersion(document.version) }))
       .filter((item): item is { document: SchemaDocument; version: number[] } => item.version !== undefined)

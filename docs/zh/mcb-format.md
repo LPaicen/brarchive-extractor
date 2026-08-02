@@ -2,7 +2,7 @@
 
 [English](../mcb-format.md)
 
-MCB 是 Minecraft Bedrock 使用的、由 schema 驱动的二进制文档格式。它既不是压缩后的 JSON，也不是自描述对象流：文件头只标识文档类型和版本，payload 不保存 JSON 字段名。因此，正确还原必须同时具备原始字节和由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 导出的兼容 Cereal schema。
+MCB 是 Minecraft Bedrock 使用的、由 schema 驱动的二进制文档格式。它既不是压缩后的 JSON，也不是自描述对象流：二进制文件头包含 payload key 和 format version，payload 不保存 JSON 字段名。因此，正确还原必须同时具备原始字节和由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 导出的兼容 `cereal` schema。
 
 本文描述 `brax` 当前实现的格式，依据包括 Bedrock 读取器逆向分析、BDS schema 元数据以及完整 preview 版资源包和行为包的精确消费测试。没有证据支持的规则会被拒绝，不会通过猜测生成 JSON。
 
@@ -33,23 +33,23 @@ EOF         ::= 不再剩余任何字节
 ## 完整文件
 
 ```bnf
-mcb-file      ::= magic semantic-version document-type root-payload EOF
+mcb-file      ::= magic format-version payload-key root-payload EOF
 magic         ::= %x7F %x4D %x43 %x42
-semantic-version ::= u16le-major u16le-minor u32le-patch
-document-type ::= string
-root-payload  ::= value(select-root(document-type, semantic-version))
+format-version ::= u16le-major u16le-minor u32le-patch
+payload-key   ::= string
+root-payload  ::= value(select-root(payload-key, format-version))
 ```
 
 | 偏移 | 大小 | 编码 | 含义 |
 |---:|---:|---|---|
 | `0x00` | 4 | 固定字节 | `7F 4D 43 42`，作为 `uint32 LE` 时为 `0x42434D7F` |
-| `0x04` | 2 | `uint16 LE` | major 版本 |
-| `0x06` | 2 | `uint16 LE` | minor 版本 |
-| `0x08` | 4 | `uint32 LE` | patch 版本 |
-| `0x0C` | 可变 | `string` | 文档类型 |
+| `0x04` | 2 | `uint16 LE` | format version major 分量 |
+| `0x06` | 2 | `uint16 LE` | format version minor 分量 |
+| `0x08` | 4 | `uint32 LE` | format version patch 分量 |
+| `0x0C` | 可变 | `string` | payload key |
 | 后续 | 可变 | schema 决定 | 根 payload |
 
-例如，下面的前缀表示版本 `1.26.10`、文档类型 `particle_effect`：
+例如，下面的前缀表示 format version `1.26.10`、payload key `particle_effect`：
 
 ```hex
 7F 4D 43 42  01 00  1A 00  0A 00 00 00
@@ -68,23 +68,23 @@ contents.json
 metadata/json_schemas/
 ```
 
-`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，解析相对 `$ref` 和 JSON Pointer 片段，并按 `title` 对根候选分组。对于数字版本，优先选择不高于 MCB 文件头版本的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。
+`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，解析相对 `$ref` 和 JSON Pointer 片段，并按 `title` 对根候选分组。对于数字版本，优先选择不高于 MCB format version 的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。
 
-多数文档类型与根 schema 标题相同。目前 BDS 导出需要以下已确认别名：
+多数 payload key 与根 schema 标题相同。目前 BDS 导出需要以下已确认别名：
 
-| MCB 文档类型 | BDS schema 标题 | 还原后的顶层成员 |
+| MCB payload key | BDS schema 标题 | 还原后的顶层成员 |
 |---|---|---|
 | `particle_effect` | `particle_effect` | `particle_effect` |
 | `minecraft:voxel_shape` | `VoxelShapeFile` | `minecraft:voxel_shape` |
 | `minecraft:item` | `Item Document` | `minecraft:item` |
 | `tiers` | `Trade Table` | `tiers` |
 
-解码后的 schema 值会包在原始 MCB 文档类型下面。一般文档还会从所选 schema 补入 `format_version`。`tiers` 是已确认的例外：其根 schema 是数组，源 JSON 结构为 `{ "tiers": [...] }`，没有 `format_version`。
+解码后的 schema 值会包在原始 MCB payload key 下面。一般文档还会从所选 schema 补入 `format_version`。`tiers` 是已确认的例外：其根 schema 是数组，源 JSON 结构为 `{ "tiers": [...] }`，没有 `format_version`。
 
 ```bnf
 normal-root-json ::= {
   "format_version": selected-schema-version,
-  document-type: root-payload
+  payload-key: root-payload
 }
 
 trade-root-json ::= { "tiers": root-payload }
@@ -230,16 +230,16 @@ map-key(int32)  ::= i32le
 15 6D 69 6E 65 ... 62 6F 78 ; 值 "minecraft:shulker_box"
 ```
 
-## 组件存储
+## `cereal::ComponentStorage`
 
-当对象 schema 的属性都是 `minecraft:icon` 之类的组件名，且这些属性没有 ordinal 时，它使用独立的哈希表布局：
+由 `cereal::ComponentStorage` 承载、schema 属性均为 `minecraft:icon` 之类组件名且没有 ordinal 的对象，使用 `cereal::internal::ComponentStorageCompositeSchema` 所处理的条目编码：
 
 ```bnf
 component-storage(S) ::= u32le-count component-entry(S)*count
-component-entry(S)   ::= u32le-name-hash value(component-schema(name-hash))
+component-entry(S)   ::= u32le-component-id value(component-schema(component-id))
 ```
 
-键是完整组件名 UTF-8 字节的 32 位 FNV-1a：
+component ID 是完整组件名 UTF-8 字节的 32 位 FNV-1a：
 
 ```text
 hash = 0x811C9DC5
@@ -248,11 +248,11 @@ for byte in utf8(component_name):
     hash = (hash * 0x01000193) modulo 2^32
 ```
 
-组件 payload 没有长度字段。必须先由哈希找到组件 schema，才能知道下一个值的偏移。未知哈希、重复组件或哈希碰撞都会报错，不能直接跳过。
+组件 payload 没有长度字段。必须先由 component ID 找到组件 schema，才能知道下一个值的偏移。未知 component ID、重复组件或 ID 碰撞都会报错，不能直接跳过。
 
-## `oneOf`：带标签二进制变体
+## `oneOf`：Tagged Variant
 
-真正的二进制变体使用一个字节的 discriminator：
+tagged variant 使用一个字节的 tag：
 
 ```bnf
 tagged-one-of(S) ::= u8-tag value(branch(S, tag))
@@ -275,7 +275,7 @@ tagged-one-of(S) ::= u8-tag value(branch(S, tag))
 
 ## `oneOf`：归一化表示
 
-部分 `oneOf` 只描述 JSON 可接受的多种写法，并不表示二进制存在多个布局。编译后的 C++ 值只有一种归一化表示，也没有 discriminator。`brax` 根据完整样本确认了以下规则：
+部分 `oneOf` 只描述 JSON 可接受的多种写法，并不表示二进制存在多个布局。编译后的 C++ 值只有一种归一化表示，也没有 variant tag。`brax` 根据完整样本确认了以下规则：
 
 | Schema 标题 | 选择的二进制产生式 | 还原表示 |
 |---|---|---|
@@ -306,11 +306,11 @@ normalized-one-of(S) ::= value(confirmed-normalized-branch(S))
 trade-item-list ::= varuint32-count value(TradeItem)*count
 ```
 
-这里的 count 不是 `oneOf` tag。count 为 1 时还原为直接 `TradeItem` 分支，其他数量还原为 `{ "choice": [...] }`。wandering trader 样本中的 `3`、`4`、`8`、`9` 因而是候选项数量，不是未知 discriminator。
+这里的 count 不是 `oneOf` tag。count 为 1 时还原为直接 `TradeItem` 分支，其他数量还原为 `{ "choice": [...] }`。wandering trader 样本中的 `3`、`4`、`8`、`9` 因而是候选项数量，不是未知 variant tag。
 
 ## 已确认的文档 Payload
 
-上述通用规则组合成当前完整 preview 包中的几种文档类型。
+上述通用规则组合成当前完整 preview 包中的几种 payload key。
 
 ### 粒子效果
 
@@ -320,7 +320,7 @@ components      ::= component-storage(ParticleComponents)
 curves          ::= map(string, particle_curve)
 ```
 
-粒子同时使用 ordinal 对象、组件哈希、Molang 值、映射、数组、带标签曲线和归一化 JSON 表示。当前 200 个粒子 MCB 样本均精确消费至 EOF。
+粒子同时使用 ordinal 对象、component ID、Molang 值、映射、数组、带标签曲线和归一化 JSON 表示。当前 200 个粒子 MCB 样本均精确消费至 EOF。
 
 ### 体素形状
 
@@ -360,7 +360,7 @@ Trade       ::= dynamic-array(TradeItemList-wants)
 
 当前样本中，`loot_tables` 路径下共有 126 份 brarchive 报告，每份都是 `mcbEntries = 0`。其中 payload 是普通 JSON，通过非 MCB 路径复制或格式化。战利品表 JSON 通常没有 `format_version`，但这不需要另一套 MCB 解码规则，因为这些样本根本不会进入 MCB 解码器。
 
-此前看起来相近的失败实际是村民交易表。其文档类型为 `tiers`；旧解码器不知道 `Trade Table` 根别名，也不支持数组根，所以才会失败。
+此前看起来相近的失败实际是村民交易表。其 payload key 为 `tiers`；旧解码器不知道 `Trade Table` 根别名，也不支持数组根，所以才会失败。
 
 ## 已知缺失 Schema：Camera Entity
 
@@ -368,10 +368,10 @@ Trade       ::= dynamic-array(TradeItemList-wants)
 
 ```text
 resource_packs/vanilla/__brarchive/cameras.brarchive :: death.json
-文档类型：minecraft:camera_entity
+payload key：minecraft:camera_entity
 ```
 
-其 payload 以标识符 `minecraft:death_camera` 开始，随后是值为 13 的 `uint32 LE` 组件数量和哈希组件 payload。BDS 导出中存在 `CameraDefinitions.json` 及各组件 schema，但不存在描述 description 字段、组件容器、根标题和输出外层结构的 `minecraft:camera_entity` 根 schema。
+其 payload 以标识符 `minecraft:death_camera` 开始，随后是值为 13 的 `uint32 LE` 组件数量，以及各 component ID 和对应 payload。BDS 导出中存在 `CameraDefinitions.json` 及各组件 schema，但不存在描述 description 字段、组件容器、根标题和输出外层结构的 `minecraft:camera_entity` 根 schema。
 
 这些字节很像常见的 `description + components` 文档，但自行合成根 schema 超出了导出 schema 契约，只能算推测。因此 `brax` 会报告 `missing-schema` 并保留原 MCB。未来 BDS 导出若包含根 schema，或通过游戏注册代码独立确认该根结构，就可以在不降低校验强度的前提下支持它。
 
@@ -382,7 +382,7 @@ resource_packs/vanilla/__brarchive/cameras.brarchive :: death.json
 | 失败 | 含义 |
 |---|---|
 | `invalid-mcb` | 魔数或基本文件身份错误 |
-| `missing-schema` | 根、`$ref`、组件哈希或 schema 片段缺失 |
+| `missing-schema` | 根、`$ref`、component ID 或 schema 片段缺失 |
 | `unsupported-schema` | 元数据存在，但不能确定受支持的二进制产生式 |
 | `decode-error` | 字节违反所选产生式、UTF-8、边界、布尔、枚举或数量规则 |
 | `trailing-data` | 局部解码成功，但没有消费完整 payload |
@@ -393,7 +393,7 @@ resource_packs/vanilla/__brarchive/cameras.brarchive :: death.json
 
 使用当前完整 preview 版行为包和资源包：
 
-| 文档类型 | MCB 文件 | 成功还原 | 剩余失败 |
+| Payload key | MCB 文件 | 成功还原 | 剩余失败 |
 |---|---:|---:|---:|
 | `particle_effect` | 200 | 200 | 0 |
 | `minecraft:voxel_shape` | 218 | 218 | 0 |
