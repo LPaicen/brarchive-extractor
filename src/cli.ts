@@ -92,7 +92,7 @@ ${option('    --verbose', 'Show status and progress (default)')}
 ${option('    --no-verbose', 'Disable status and progress')}
 ${option('-l, --list', 'List every archive result and failure detail')}
 ${option('-j, --json-format <mode>', 'pretty or compact restored MCB JSON (default: pretty)')}
-${option('-a, --format-all-json', 'Apply the selected JSON format to non-MCB .json entries')}
+${option('-a, --format-all-json', 'Format non-MCB .json entries and preserve comments')}
 ${option('    --indent-size <0-10>', 'Indentation width for pretty JSON (default: 2)')}
 ${option('    --indent-char <value>', 'Indent with space or tab (default: space)')}
 ${option('-F, --fail-fast', 'Stop processing after the first entry or archive failure')}

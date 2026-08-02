@@ -162,13 +162,13 @@ Restored MCB JSON uses two-space indentation by default:
 brax .\input -s .\bds-schema --json-format pretty
 ```
 
-Write compact, single-line JSON without structural whitespace or a trailing newline:
+Write compact JSON without removable structural whitespace or a trailing newline:
 
 ```powershell
 brax .\input -s .\bds-schema --json-format compact
 ```
 
-`--json-format` normally affects only restored MCB output. With `--format-all-json`, ordinary `.json` archive entries and directory source files are also parsed and serialized using the selected format. In pretty mode, configure indentation with `--indent-size 0-10` and `--indent-char space|tab`.
+`--json-format` normally affects only restored MCB output. With `--format-all-json`, ordinary `.json` archive entries and directory source files are also validated and formatted using the selected mode. JavaScript-style line comments (`//`) and block comments (`/* ... */`) are accepted and preserved. Compact mode retains a newline after a line comment when another token follows because removing it would comment out the remaining JSON. Trailing commas and other invalid JSON syntax are still rejected. In pretty mode, configure indentation with `--indent-size 0-10` and `--indent-char space|tab`.
 
 ## Failure Policies
 

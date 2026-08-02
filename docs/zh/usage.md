@@ -162,13 +162,13 @@ MCB 还原 JSON 默认使用两个空格缩进：
 brax .\input -s .\bds-schema --json-format pretty
 ```
 
-压缩成单行：
+删除可移除结构空白并压缩输出：
 
 ```powershell
 brax .\input -s .\bds-schema --json-format compact
 ```
 
-`--json-format` 默认只影响 MCB 还原结果。加上 `--format-all-json` 后，归档条目和目录输入中的普通 `.json` 也会被解析并重新序列化。pretty 模式可使用 `--indent-size 0-10` 和 `--indent-char space|tab` 设置缩进。
+`--json-format` 默认只影响 MCB 还原结果。加上 `--format-all-json` 后，归档条目和目录输入中的普通 `.json` 也会按所选模式进行校验和格式化。JavaScript 风格的单行注释（`//`）和块注释（`/* ... */`）均可解析并保留。compact 模式在单行注释后仍有其他 token 时会保留换行，否则后续 JSON 会被注释覆盖。尾随逗号及其他非法 JSON 语法仍会被拒绝。pretty 模式可使用 `--indent-size 0-10` 和 `--indent-char space|tab` 设置缩进。
 
 ## 失败策略
 

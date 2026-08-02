@@ -143,10 +143,13 @@ test('run formats non-MCB JSON only when requested', async () => {
   try {
     const archivePath = path.join(temporaryRoot, 'json.brarchive')
     const originalJson = '{\n    "name": "sample",\n    "values": [1, 2]\n}\n'
+    const commentedJson =
+      '{\n    // line comment\n    "name": /* block comment */ "sample",\n    "values": [1, 2]\n}\n'
     await writeFile(
       archivePath,
       makeArchive([
         { name: 'data.json', payload: Buffer.from(originalJson) },
+        { name: 'commented.json', payload: Buffer.from(commentedJson) },
         { name: 'data.txt', payload: Buffer.from(originalJson) },
       ]),
     )
@@ -154,6 +157,7 @@ test('run formats non-MCB JSON only when requested', async () => {
     const untouchedOutput = path.join(temporaryRoot, 'untouched')
     await run({ inputPath: archivePath, outputPath: untouchedOutput, jsonFormat: 'compact' })
     assert.equal(await readFile(path.join(untouchedOutput, 'data.json'), 'utf8'), originalJson)
+    assert.equal(await readFile(path.join(untouchedOutput, 'commented.json'), 'utf8'), commentedJson)
     assert.equal(await readFile(path.join(untouchedOutput, 'data.txt'), 'utf8'), originalJson)
 
     const compactOutput = path.join(temporaryRoot, 'compact')
@@ -164,8 +168,12 @@ test('run formats non-MCB JSON only when requested', async () => {
       formatAllJson: true,
     })
     assert.equal(await readFile(path.join(compactOutput, 'data.json'), 'utf8'), '{"name":"sample","values":[1,2]}')
+    assert.equal(
+      await readFile(path.join(compactOutput, 'commented.json'), 'utf8'),
+      '{// line comment\n"name":/* block comment */"sample","values":[1,2]}',
+    )
     assert.equal(await readFile(path.join(compactOutput, 'data.txt'), 'utf8'), originalJson)
-    assert.equal(compactRun.archives[0]!.formattedJson, 1)
+    assert.equal(compactRun.archives[0]!.formattedJson, 2)
 
     const tabOutput = path.join(temporaryRoot, 'tabs')
     await run({
@@ -179,6 +187,10 @@ test('run formats non-MCB JSON only when requested', async () => {
       await readFile(path.join(tabOutput, 'data.json'), 'utf8'),
       '{\n\t"name": "sample",\n\t"values": [\n\t\t1,\n\t\t2\n\t]\n}\n',
     )
+    assert.equal(
+      await readFile(path.join(tabOutput, 'commented.json'), 'utf8'),
+      '{\n\t// line comment\n\t"name": /* block comment */ "sample",\n\t"values": [\n\t\t1,\n\t\t2\n\t]\n}\n',
+    )
 
     const cliPath = path.join(process.cwd(), 'dist', 'src', 'cli.js')
     const cliOutput = path.join(temporaryRoot, 'cli-compact')
@@ -187,6 +199,10 @@ test('run formats non-MCB JSON only when requested', async () => {
     })
     assert.equal(cliRun.status, 0, cliRun.stderr)
     assert.equal(await readFile(path.join(cliOutput, 'data.json'), 'utf8'), '{"name":"sample","values":[1,2]}')
+    assert.equal(
+      await readFile(path.join(cliOutput, 'commented.json'), 'utf8'),
+      '{// line comment\n"name":/* block comment */"sample","values":[1,2]}',
+    )
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }
@@ -340,7 +356,7 @@ test('run supports in-place directory and single-archive extraction', async () =
   try {
     const inputRoot = path.join(temporaryRoot, 'input')
     await mkdir(inputRoot, { recursive: true })
-    await writeFile(path.join(inputRoot, 'source.json'), '{\n  "value": true\n}\n')
+    await writeFile(path.join(inputRoot, 'source.json'), '{\n  // source comment\n  "value": /* block */ true\n}\n')
     await writeFile(path.join(inputRoot, 'binary.dat'), Buffer.from([0, 1, 2, 255]))
     await writeFile(
       path.join(inputRoot, 'pack.brarchive'),
@@ -355,7 +371,10 @@ test('run supports in-place directory and single-archive extraction', async () =
     })
     assert.equal(directoryRun.outputRoot, inputRoot)
     assert.equal(directoryRun.conflictsDetected, 0)
-    assert.equal(await readFile(path.join(inputRoot, 'source.json'), 'utf8'), '{"value":true}')
+    assert.equal(
+      await readFile(path.join(inputRoot, 'source.json'), 'utf8'),
+      '{// source comment\n"value":/* block */true}',
+    )
     assert.deepEqual(await readFile(path.join(inputRoot, 'binary.dat')), Buffer.from([0, 1, 2, 255]))
     assert.equal(await readFile(path.join(inputRoot, 'pack', 'nested', 'value.txt'), 'utf8'), 'archive value')
     await access(path.join(inputRoot, 'pack.brarchive'))

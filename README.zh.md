@@ -81,7 +81,7 @@ metadata/json_schemas/
     --no-verbose         关闭状态和进度条
 -l, --list               列出归档结果、失败和冲突详情
 -j, --json-format <mode> restored MCB JSON 使用 pretty 或 compact
--a, --format-all-json    同时格式化普通 .json 文件
+-a, --format-all-json    格式化普通 .json 文件并保留注释
     --indent-size <0-10> pretty JSON 的缩进宽度（默认 2）
     --indent-char <value> 使用 space 或 tab 缩进（默认 space）
 -F, --fail-fast          第一次解析失败后停止

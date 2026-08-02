@@ -1,5 +1,14 @@
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import {
+  applyEdits,
+  createScanner,
+  format as formatJsonc,
+  parseTree as parseJsoncTree,
+  printParseErrorCode,
+  SyntaxKind,
+  type ParseError,
+} from 'jsonc-parser'
 import { isMcb, parseBrarchive, type Brarchive, type BrarchiveEntry } from './brarchive.js'
 import { ToolError, toToolError, type FailureKind } from './errors.js'
 import { McbDecoder } from './mcb-decoder.js'
@@ -188,6 +197,64 @@ function serializeJson(value: unknown, settings: JsonOutputSettings): string {
     return JSON.stringify(value)
   }
   return `${JSON.stringify(value, null, settings.indentation)}\n`
+}
+
+function validateJsonWithComments(text: string): void {
+  const errors: ParseError[] = []
+  parseJsoncTree(text, errors, { allowTrailingComma: false, disallowComments: false })
+  if (errors.length === 0) {
+    return
+  }
+
+  const first = errors[0]!
+  throw new SyntaxError(`${printParseErrorCode(first.error)} at offset ${first.offset}`)
+}
+
+function compactJsonWithComments(text: string): string {
+  const scanner = createScanner(text, false)
+  const tokens: Array<{ kind: SyntaxKind; text: string }> = []
+  for (let kind = scanner.scan(); kind !== SyntaxKind.EOF; kind = scanner.scan()) {
+    if (kind === SyntaxKind.Trivia || kind === SyntaxKind.LineBreakTrivia) {
+      continue
+    }
+    const offset = scanner.getTokenOffset()
+    tokens.push({ kind, text: text.slice(offset, offset + scanner.getTokenLength()) })
+  }
+
+  let result = ''
+  for (const [index, token] of tokens.entries()) {
+    result += token.text
+    if (token.kind === SyntaxKind.LineCommentTrivia && index + 1 < tokens.length) {
+      result += '\n'
+    }
+  }
+  return result
+}
+
+function formatJsonWithComments(text: string, settings: JsonOutputSettings): string {
+  validateJsonWithComments(text)
+  const normalizedText = text.replace(/\r\n?/g, '\n')
+  if (settings.format === 'compact') {
+    return compactJsonWithComments(normalizedText)
+  }
+  if (settings.indentation.length === 0) {
+    return `${compactJsonWithComments(normalizedText)}\n`
+  }
+
+  const insertSpaces = settings.indentation[0] === ' '
+  let formatted = applyEdits(
+    normalizedText,
+    formatJsonc(normalizedText, undefined, {
+      eol: '\n',
+      insertFinalNewline: true,
+      insertSpaces,
+      tabSize: insertSpaces ? settings.indentation.length : 1,
+    }),
+  )
+  if (!insertSpaces && settings.indentation.length > 1) {
+    formatted = formatted.replace(/^\t+/gm, indentation => indentation.repeat(settings.indentation.length))
+  }
+  return formatted.endsWith('\n') ? formatted : `${formatted}\n`
 }
 
 async function collectFiles(directory: string, recursive: boolean): Promise<string[]> {
@@ -637,7 +704,7 @@ async function processSourceFiles(
     } else if (settings.formatAllJson && plan.relativePath.toLocaleLowerCase('en-US').endsWith('.json')) {
       report.jsonFiles += 1
       try {
-        output = serializeJson(JSON.parse(plan.payload.toString('utf8')) as unknown, settings)
+        output = formatJsonWithComments(plan.payload.toString('utf8'), settings)
         report.formattedJson += 1
       } catch (error) {
         const cause = toToolError(error)
@@ -741,7 +808,7 @@ async function unpackOne(
       if (settings.formatAllJson && entry.name.toLocaleLowerCase('en-US').endsWith('.json')) {
         report.jsonEntries += 1
         try {
-          output = serializeJson(JSON.parse(entry.payload.toString('utf8')) as unknown, settings)
+          output = formatJsonWithComments(entry.payload.toString('utf8'), settings)
           report.formattedJson += 1
         } catch (error) {
           const cause = toToolError(error)

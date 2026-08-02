@@ -81,7 +81,7 @@ Enter `o`, `k`, or `c` to overwrite, keep the existing file, or coexist as `name
     --no-verbose         Disable status and progress
 -l, --list               List archive, failure, and conflict details
 -j, --json-format <mode> Use pretty or compact restored MCB JSON
--a, --format-all-json    Also format ordinary .json files
+-a, --format-all-json    Format ordinary .json files; preserve comments
     --indent-size <0-10> Pretty JSON indentation width (default: 2)
     --indent-char <value> Indent with space or tab (default: space)
 -F, --fail-fast          Stop after the first parsing failure
