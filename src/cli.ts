@@ -30,7 +30,10 @@ const ANSI = {
 interface CliOptions extends RunOptions {
   verbose: boolean
   listResults?: boolean
+  listAllResults?: boolean
 }
+
+type CompletionStatus = 'ok' | 'incomplete' | 'failed'
 
 interface ProgressReporter {
   update(progress: ProgressInfo): void
@@ -90,23 +93,25 @@ ${option('-f, --force', 'Clear output first; incompatible with --overwrite and -
 ${option('-p, --report', 'Write .brarchive-report.json for each archive')}
 ${option('    --verbose', 'Show status and progress (default)')}
 ${option('    --no-verbose', 'Disable status and progress')}
-${option('-l, --list', 'List every archive result and failure detail')}
+${option('-l, --list', 'List failure details only')}
+${option('-L, --list-all', 'List all archive, failure, and conflict details')}
 ${option('-j, --json-format <mode>', 'pretty or compact restored MCB JSON (default: pretty)')}
-${option('-a, --format-all-json', 'Format non-MCB .json entries and preserve comments')}
+${option('-J, --format-all-json', 'Format non-MCB .json entries and preserve comments')}
 ${option('    --indent-size <0-10>', 'Indentation width for pretty JSON (default: 2)')}
 ${option('    --indent-char <value>', 'Indent with space or tab (default: space)')}
 ${option('-F, --fail-fast', 'Stop processing after the first entry or archive failure')}
 ${option('-D, --discard-failed', 'Do not keep failed entries; ignored with --fail-fast')}
 ${option('    --mcb-only', 'Extract and restore MCB entries only')}
+${option('    --no-empty-dirs', 'Do not create directories without extracted files')}
 ${option('    --split-archives', 'Keep foo.brarchive and foo directory outputs separate')}
 ${option('-i, --in-place', 'Write into the source tree; incompatible with --output, --split-archives, and --force')}
 ${option('-h, --help', 'Show help')}
 ${option('-v, --version', 'Show version')}
 
 ${paint('Exit codes:', 'bold', stdoutColor)}
-  ${paint('0', 'green', stdoutColor)}  All archives succeeded, or extraction completed without a schema
-  ${paint('1', 'red', stdoutColor)}  Invalid arguments, schema root, or another fatal error
-  ${paint('2', 'yellow', stdoutColor)}  Processing completed or stopped with entry or archive failures
+  ${paint('0', 'green', stdoutColor)}  All archives unpacked without entry-level issues
+  ${paint('1', 'red', stdoutColor)}  Fatal error, or every archive failed to unpack
+  ${paint('2', 'yellow', stdoutColor)}  Processing was incomplete, but not every archive failed to unpack
 
 Colors are enabled for terminals and disabled for redirected output. NO_COLOR disables colors; FORCE_COLOR enables them.`)
 }
@@ -192,7 +197,11 @@ function parseArguments(args: string[]): CliOptions | undefined {
       case '--list':
         options.listResults = true
         break
-      case '-a':
+      case '-L':
+      case '--list-all':
+        options.listAllResults = true
+        break
+      case '-J':
       case '--format-all-json':
         options.formatAllJson = true
         break
@@ -206,6 +215,9 @@ function parseArguments(args: string[]): CliOptions | undefined {
         break
       case '--mcb-only':
         options.mcbOnly = true
+        break
+      case '--no-empty-dirs':
+        options.omitEmptyDirectories = true
         break
       case '--split-archives':
         options.splitArchives = true
@@ -316,7 +328,7 @@ function createProgressReporter(): ProgressReporter | undefined {
       const maximumFileLength = Math.max(10, columns - stageStatus.length - 20)
       let status = stageStatus
       if (progress.phase === 'archive-complete' || progress.phase === 'copy-complete') {
-        status = progress.interrupted === true ? 'Stopped' : progress.failed === true ? 'Completed with failures' : 'Complete'
+        status = progress.interrupted === true ? 'Stopped' : progress.failed === true ? 'Completed with issues' : 'Complete'
       }
       statusBar.update(0, { status, file: truncate(file, maximumFileLength) })
 
@@ -374,6 +386,30 @@ function resultTotals(reports: ArchiveReport[]): ResultTotals {
   )
 }
 
+function archiveCompletionStatus(report: ArchiveReport): CompletionStatus {
+  if (report.archiveError !== undefined) {
+    return 'failed'
+  }
+  if (report.interrupted === true || report.failures.length > 0) {
+    return 'incomplete'
+  }
+  return 'ok'
+}
+
+function summaryCompletionStatus(summary: RunSummary): CompletionStatus {
+  const everyArchiveFailed =
+    summary.totalArchives > 0 &&
+    summary.archives.length === summary.totalArchives &&
+    summary.archiveErrors === summary.totalArchives
+  if (everyArchiveFailed) {
+    return 'failed'
+  }
+  if (summary.interrupted || summary.archiveErrors > 0 || summary.failures.length > 0) {
+    return 'incomplete'
+  }
+  return 'ok'
+}
+
 function printSummary(summary: RunSummary): void {
   const totals = resultTotals(summary.archives)
   totals.processedEntries += summary.sourceFiles.processedFiles
@@ -390,16 +426,18 @@ function printSummary(summary: RunSummary): void {
   totals.conflictSkippedEntries += summary.sourceFiles.conflictSkippedFiles
   const keptConflicts = summary.conflictsResolved.filter(conflict => conflict.action === 'keep').length
   const writtenConflicts = summary.conflictsResolved.length - keptConflicts
-  const hasFailures = summary.archiveErrors > 0 || summary.failures.length > 0
+  const completionStatus = summaryCompletionStatus(summary)
+  const hasIssues = summary.archiveErrors > 0 || summary.failures.length > 0
   const entrySummary =
     totals.skippedEntries === 0
       ? `${totals.processedEntries}/${totals.selectedEntries}`
       : `${totals.processedEntries}/${totals.selectedEntries} selected (${totals.entries} total)`
-  const status = summary.interrupted
-    ? paint('[STOPPED]', 'yellow', stdoutColor)
-    : hasFailures
+  const status =
+    completionStatus === 'failed'
       ? paint('[FAILED]', 'red', stdoutColor)
-      : paint('[OK]', 'green', stdoutColor)
+      : completionStatus === 'incomplete'
+        ? paint('[INCOMPLETE]', 'yellow', stdoutColor)
+        : paint('[OK]', 'green', stdoutColor)
   console.log(`${status} Extraction ${summary.interrupted ? 'stopped' : 'completed'}.
   ${paint('Output:', 'cyan', stdoutColor)} ${summary.outputRoot}
   Archives: ${summary.archives.length}/${summary.totalArchives}, entries: ${entrySummary}
@@ -413,18 +451,19 @@ function printSummary(summary: RunSummary): void {
     const version = summary.schemaExportVersion === undefined ? '' : ` (${summary.schemaExportVersion})`
     console.log(`  ${paint('Schema:', 'cyan', stdoutColor)} ${paint(`${summary.schemaRoot}${version}`, 'dim', stdoutColor)}`)
   }
-  if (hasFailures) {
-    console.log(`  ${paint('Failures:', 'yellow', stdoutColor)} ${summary.failures.length + summary.archiveErrors}; use --list for details`)
+  if (hasIssues) {
+    console.log(`  ${paint('Issues:', 'yellow', stdoutColor)} ${summary.failures.length + summary.archiveErrors}; use --list for details`)
   }
 }
 
 function printArchiveResult(report: ArchiveReport): void {
-  const failed = report.archiveError !== undefined || report.failures.length > 0
-  const status = report.interrupted
-    ? paint('[STOPPED]', 'yellow', stdoutColor)
-    : failed
+  const completionStatus = archiveCompletionStatus(report)
+  const status =
+    completionStatus === 'failed'
       ? paint('[FAILED]', 'red', stdoutColor)
-      : paint('[OK]', 'green', stdoutColor)
+      : completionStatus === 'incomplete'
+        ? paint('[INCOMPLETE]', 'yellow', stdoutColor)
+        : paint('[OK]', 'green', stdoutColor)
   console.log(
     `\n${status} ${report.archive}\n  ${paint('Output:', 'cyan', stdoutColor)} ${report.output}\n  Entries: ${report.processedEntries}/${report.selectedEntries} selected (${report.entries} total), MCB: ${report.mcbEntries}, restored: ${report.restoredMcb}, failed: ${report.failedMcb}\n  JSON formatted: ${report.formattedJson}, failed: ${report.failedJson}, copied: ${report.copiedEntries}, skipped: ${report.skippedEntries}, conflict-kept: ${report.conflictSkippedEntries}`,
   )
@@ -436,7 +475,37 @@ function printArchiveResult(report: ArchiveReport): void {
   }
 }
 
-function printResultList(summary: RunSummary): void {
+function printArchiveFailures(summary: RunSummary): void {
+  const failedArchives = summary.archives.filter(report => report.archiveError !== undefined)
+  if (failedArchives.length === 0) {
+    return
+  }
+  console.log(`\n${paint('Archive failures:', 'red', stdoutColor)}`)
+  for (const report of failedArchives) {
+    console.log(`  ${paint('[FAILED]', 'red', stdoutColor)} ${report.archive}\n    ${paint(report.archiveError!, 'yellow', stdoutColor)}`)
+  }
+}
+
+function printEntryFailures(summary: RunSummary): void {
+  if (summary.failures.length === 0) {
+    return
+  }
+  console.log(`\n${paint('Entry failures:', 'red', stdoutColor)}`)
+  for (const failure of summary.failures) {
+    const offset = failure.offset === undefined ? '' : `, offset 0x${failure.offset.toString(16)}`
+    const schemaPath = failure.schemaPath === undefined ? '' : `, schema ${failure.schemaPath}`
+    console.log(
+      `  ${paint(`[${failure.kind}]`, 'red', stdoutColor)} ${failure.archive} :: ${failure.entry}${offset}${schemaPath}\n    ${paint(failure.reason, 'yellow', stdoutColor)}`,
+    )
+  }
+}
+
+function printFailureList(summary: RunSummary): void {
+  printArchiveFailures(summary)
+  printEntryFailures(summary)
+}
+
+function printFullResultList(summary: RunSummary): void {
   if (summary.sourceFiles.files > 0) {
     console.log(`\n${paint('Source files:', 'bold', stdoutColor)}
   Processed: ${summary.sourceFiles.processedFiles}/${summary.sourceFiles.selectedFiles} selected (${summary.sourceFiles.files} total)
@@ -447,16 +516,7 @@ function printResultList(summary: RunSummary): void {
   for (const report of summary.archives) {
     printArchiveResult(report)
   }
-  if (summary.failures.length > 0) {
-    console.log(`\n${paint('Entry failures:', 'red', stdoutColor)}`)
-    for (const failure of summary.failures) {
-      const offset = failure.offset === undefined ? '' : `, offset 0x${failure.offset.toString(16)}`
-      const schemaPath = failure.schemaPath === undefined ? '' : `, schema ${failure.schemaPath}`
-      console.log(
-        `  ${paint(`[${failure.kind}]`, 'red', stdoutColor)} ${failure.archive} :: ${failure.entry}${offset}${schemaPath}\n    ${paint(failure.reason, 'yellow', stdoutColor)}`,
-      )
-    }
-  }
+  printEntryFailures(summary)
 
   if (summary.conflictsResolved.length > 0) {
     console.log(`\n${paint('Conflict decisions:', 'yellow', stdoutColor)}`)
@@ -508,7 +568,7 @@ async function main(): Promise<void> {
     return
   }
 
-  const { verbose, listResults, ...runOptions } = options
+  const { verbose, listResults, listAllResults, ...runOptions } = options
   let progress = verbose ? createProgressReporter() : undefined
   let lastProgress: ProgressInfo | undefined
   runOptions.onProgress = event => {
@@ -534,11 +594,16 @@ async function main(): Promise<void> {
   }
 
   printSummary(summary)
-  if (listResults === true) {
-    printResultList(summary)
+  if (listAllResults === true) {
+    printFullResultList(summary)
+  } else if (listResults === true) {
+    printFailureList(summary)
   }
 
-  if (summary.archiveErrors > 0 || summary.failures.length > 0) {
+  const completionStatus = summaryCompletionStatus(summary)
+  if (completionStatus === 'failed') {
+    process.exitCode = 1
+  } else if (completionStatus === 'incomplete') {
     process.exitCode = 2
   }
 }

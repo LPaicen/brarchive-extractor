@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   applyEdits,
@@ -54,6 +54,7 @@ export interface RunOptions {
   mcbOnly?: boolean
   splitArchives?: boolean
   inPlace?: boolean
+  omitEmptyDirectories?: boolean
   resolveConflict?: (details: ConflictDetails) => Promise<ConflictDecision>
   onProgress?: (progress: ProgressInfo) => void
 }
@@ -270,7 +271,7 @@ async function collectFiles(directory: string, recursive: boolean): Promise<stri
   return result.sort((left, right) => left.localeCompare(right, 'en-US'))
 }
 
-async function prepareOutputDirectory(outputPath: string, allowNonEmpty: boolean, clearOutput: boolean): Promise<void> {
+async function prepareOutputDirectory(outputPath: string, allowNonEmpty: boolean, clearOutput: boolean): Promise<boolean> {
   try {
     const info = await stat(outputPath)
     if (!info.isDirectory()) {
@@ -279,7 +280,7 @@ async function prepareOutputDirectory(outputPath: string, allowNonEmpty: boolean
     if (clearOutput) {
       await rm(outputPath, { recursive: true, force: true })
       await mkdir(outputPath, { recursive: true })
-      return
+      return true
     }
     if (!allowNonEmpty && (await readdir(outputPath)).length > 0) {
       throw new ToolError(
@@ -287,13 +288,22 @@ async function prepareOutputDirectory(outputPath: string, allowNonEmpty: boolean
         `Output directory is not empty: ${outputPath}; use --overwrite to preserve it or --force to clear it`,
       )
     }
+    return false
   } catch (error) {
     const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined
     if (code !== 'ENOENT') {
       throw error
     }
     await mkdir(outputPath, { recursive: true })
+    return true
   }
+}
+
+async function removeNewEmptyOutputRoot(outputPath: string, createdByRun: boolean): Promise<void> {
+  if (!createdByRun || (await readdir(outputPath)).length > 0) {
+    return
+  }
+  await rmdir(outputPath)
 }
 
 function pathContains(parent: string, candidate: string): boolean {
@@ -607,6 +617,7 @@ function plannedWrites(
   sourceFiles: PlannedSourceFile[],
   archives: PlannedArchive[],
   writeReports: boolean,
+  omitEmptyDirectories: boolean,
 ): PlannedWrite[] {
   const result: PlannedWrite[] = sourceFiles.map(file => ({
     destination: file.destination,
@@ -620,7 +631,7 @@ function plannedWrites(
         source: archiveEntrySource(archive.archivePath, entry),
       })
     }
-    if (writeReports && archive.archive !== undefined) {
+    if (writeReports && archive.archive !== undefined && (!omitEmptyDirectories || archive.selectedEntries.length > 0)) {
       result.push({ destination: archive.reportDestination, source: reportSource(archive.archivePath) })
     }
   }
@@ -759,6 +770,7 @@ async function unpackOne(
   plan: PlannedArchive,
   decoder: McbDecoder | undefined,
   writeReport: boolean,
+  omitEmptyDirectories: boolean,
   settings: JsonOutputSettings,
   failFast: boolean,
   preserveFailed: boolean,
@@ -790,7 +802,7 @@ async function unpackOne(
   }
 
   report.archiveVersion = plan.archive!.version
-  await mkdir(plan.outputPath, { recursive: true })
+  let writtenEntries = 0
   for (const [entryOffset, entry] of plan.selectedEntries.entries()) {
     report.processedEntries += 1
     onProgress?.({
@@ -860,6 +872,7 @@ async function unpackOne(
       } else {
         await mkdir(path.dirname(destination), { recursive: true })
         await writeFile(destination, output)
+        writtenEntries += 1
         if (rawCopy) {
           report.copiedEntries += 1
         }
@@ -872,7 +885,7 @@ async function unpackOne(
     }
   }
 
-  if (writeReport) {
+  if (writeReport && (!omitEmptyDirectories || writtenEntries > 0)) {
     const reportDestination = await conflicts.resolve(plan.reportDestination, reportSource(plan.archivePath))
     if (reportDestination !== undefined) {
       report.reportPath = reportDestination
@@ -1021,9 +1034,10 @@ export async function run(options: RunOptions): Promise<RunSummary> {
   )
   const onProgress = createOverallProgressEmitter(sourceFiles.length, archives, options.onProgress)
 
-  await prepareOutputDirectory(outputRoot, inPlace || overwrite, force)
+  const omitEmptyDirectories = options.omitEmptyDirectories ?? false
+  const outputRootCreatedByRun = await prepareOutputDirectory(outputRoot, inPlace || overwrite, force)
   const conflicts = await ConflictManager.create(
-    plannedWrites(sourceFiles, archives, options.report ?? false),
+    plannedWrites(sourceFiles, archives, options.report ?? false, omitEmptyDirectories),
     options.resolveConflict,
     overwrite || force,
   )
@@ -1058,6 +1072,7 @@ export async function run(options: RunOptions): Promise<RunSummary> {
         archive,
         decoder,
         options.report ?? false,
+        omitEmptyDirectories,
         settings,
         options.failFast ?? false,
         options.preserveFailed ?? true,
@@ -1083,6 +1098,9 @@ export async function run(options: RunOptions): Promise<RunSummary> {
   }
 
   const failures = [...sourceFileReport.failures, ...reports.flatMap(report => report.failures)]
+  if (omitEmptyDirectories) {
+    await removeNewEmptyOutputRoot(outputRoot, outputRootCreatedByRun)
+  }
   return {
     schemaRoot: registry?.rootPath,
     schemaExportVersion: registry?.exportVersion,

@@ -62,6 +62,8 @@ test/input/vanilla/__brarchive/entities.brarchive
 
 Archive entry paths and names remain unchanged. Ordinary files in a directory input, including JSON, NBT, images, and other binary files, are copied using the same relative paths. `--mcb-only` keeps only archive entries and ordinary source files whose magic identifies them as MCB.
 
+`--no-empty-dirs` omits archive output directories when no entry is actually written. This includes structurally empty archives, archives emptied by `--mcb-only`, and archives whose only failed entries are removed by `--discard-failed`. Empty source directories are also omitted. A `--report` file is metadata rather than extracted content, so neither the report nor its directory is written for an otherwise empty archive.
+
 Select another output root with `--output`:
 
 ```powershell
@@ -176,8 +178,8 @@ By default, the tool:
 
 - continues after a file fails to parse;
 - preserves the failed file at its target path using the original bytes;
-- exits with status `2` after processing;
-- shows only a concise failure count unless `--list` is used.
+- classifies the result as incomplete and exits with status `2` after an entry-level issue;
+- shows only a concise issue count unless `--list` is used.
 
 `--discard-failed` does not write the current failed file. It never deletes files produced by another input or an earlier run. `--fail-fast` stops after the first parsing failure and always preserves the file that triggered the stop, so `--discard-failed` has no effect when both options are used.
 
@@ -185,13 +187,21 @@ By default, the tool:
 
 Detailed progress is enabled by default. In an interactive terminal, the first line shows the current stage and file, the second line tracks the current archive or source-file batch, and the third line tracks the entire extraction task. Both progress bars show a percentage and `current/total`. Use `--no-verbose` to disable them. Redirected output automatically disables live progress to avoid repeated log lines.
 
-The default final output is one concise summary. Use `--list` to show ordinary source-file statistics, every archive result, failure details, and conflict decisions:
+The default final output is one concise summary. Use `--list` to show only archive and entry failure details:
 
 ```powershell
 brax .\input -s .\bds-schema --list
 ```
 
-`--report` writes `.brarchive-report.json` in each archive output directory. Report files are logs and are always readable JSON regardless of `--json-format`.
+Use `--list-all` to include ordinary source-file statistics, every archive result, failure details, and conflict decisions:
+
+```powershell
+brax .\input -s .\bds-schema --list-all
+```
+
+An archive whose container was unpacked but whose MCB restoration or ordinary JSON formatting had errors is shown as `[INCOMPLETE]`, not `[FAILED]`. `[FAILED]` is reserved for an archive container that could not be parsed. In directory mode the overall result is `[FAILED]` only when every archive fails to unpack; one or more successfully unpacked archives make a mixed result `[INCOMPLETE]`.
+
+`--report` writes `.brarchive-report.json` in each non-empty archive output directory. Report files are logs and are always readable JSON regardless of `--json-format`. With `--no-empty-dirs`, a report is not written for an archive that produced no extracted files.
 
 ## Complete Option List
 
@@ -207,17 +217,19 @@ brax .\input -s .\bds-schema --list
     --verbose
     --no-verbose
 -l, --list
+-L, --list-all
 -j, --json-format <pretty|compact>
--a, --format-all-json
+-J, --format-all-json
     --indent-size <0-10>
     --indent-char <space|tab>
 -F, --fail-fast
 -D, --discard-failed
     --mcb-only
+    --no-empty-dirs
     --split-archives
 -i, --in-place
 -h, --help
 -v, --version
 ```
 
-Exit status `0` means success, `1` means an option, schema, conflict interaction, or other fatal error, and `2` means processing completed or stopped with entry restoration or archive parsing failures.
+Exit status `0` means complete success. Status `1` means an option, schema, conflict interaction, or other fatal error, or that every input archive failed to unpack. Status `2` means processing was incomplete because of entry-level issues, a partial archive failure, or `--fail-fast`, but not every archive failed to unpack.

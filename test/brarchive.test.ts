@@ -120,7 +120,7 @@ test('run controls overwrite, force clearing, reports, and progress events', asy
     const cliOutputPath = path.join(temporaryRoot, 'cli-output')
     const cliRun = spawnSync(
       process.execPath,
-      [cliPath, archivePath, '--output', cliOutputPath, '-p', '--list'],
+      [cliPath, archivePath, '--output', cliOutputPath, '-p', '--list-all'],
       { encoding: 'utf8' },
     )
     assert.equal(cliRun.status, 0, cliRun.stderr)
@@ -194,7 +194,7 @@ test('run formats non-MCB JSON only when requested', async () => {
 
     const cliPath = path.join(process.cwd(), 'dist', 'src', 'cli.js')
     const cliOutput = path.join(temporaryRoot, 'cli-compact')
-    const cliRun = spawnSync(process.execPath, [cliPath, archivePath, '-o', cliOutput, '-j', 'compact', '-a'], {
+    const cliRun = spawnSync(process.execPath, [cliPath, archivePath, '-o', cliOutput, '-j', 'compact', '-J'], {
       encoding: 'utf8',
     })
     assert.equal(cliRun.status, 0, cliRun.stderr)
@@ -267,8 +267,10 @@ test('run continues by default and supports fail-fast processing', async () => {
       { encoding: 'utf8' },
     )
     assert.equal(concise.status, 2)
+    assert.match(concise.stdout, /^\[INCOMPLETE\]/)
+    assert.doesNotMatch(concise.stdout, /^\[FAILED\]/)
     assert.match(concise.stdout, /Extraction completed/)
-    assert.match(concise.stdout, /Failures: 1; use --list for details/)
+    assert.match(concise.stdout, /Issues: 1; use --list for details/)
     assert.doesNotMatch(concise.stdout, /Archive results:/)
     assert.equal(concise.stderr, '')
 
@@ -279,17 +281,34 @@ test('run continues by default and supports fail-fast processing', async () => {
       { encoding: 'utf8' },
     )
     assert.equal(listed.status, 2)
-    assert.match(listed.stdout, /Archive results:/)
+    assert.doesNotMatch(listed.stdout, /Archive results:/)
     assert.match(listed.stdout, /Entry failures:/)
+
+    const allResultsOutput = path.join(temporaryRoot, 'all-results')
+    const allResults = spawnSync(
+      process.execPath,
+      [cliPath, archivePath, '--output', allResultsOutput, '--format-all-json', '-L'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(allResults.status, 2)
+    assert.match(allResults.stdout, /Archive results:/)
+    assert.match(allResults.stdout, /\[INCOMPLETE\]/)
+    assert.match(allResults.stdout, /Entry failures:/)
 
     const shortFailureOutput = path.join(temporaryRoot, 'short-failure-options')
     const shortFailureRun = spawnSync(
       process.execPath,
-      [cliPath, archivePath, '-o', shortFailureOutput, '-a', '-F', '-D'],
+      [cliPath, archivePath, '-o', shortFailureOutput, '-J', '-F', '-D'],
       { encoding: 'utf8' },
     )
     assert.equal(shortFailureRun.status, 2, shortFailureRun.stderr)
     assert.match(shortFailureRun.stdout, /Extraction stopped/)
+
+    const removedShortFormatOption = spawnSync(process.execPath, [cliPath, archivePath, '-a'], {
+      encoding: 'utf8',
+    })
+    assert.equal(removedShortFormatOption.status, 1)
+    assert.match(removedShortFormatOption.stderr, /Unknown option: -a/)
 
     const removedResultsOption = spawnSync(process.execPath, [cliPath, archivePath, '--show-all-results'], {
       encoding: 'utf8',
@@ -307,6 +326,117 @@ test('run continues by default and supports fail-fast processing', async () => {
     assert.match(coloredHelp.stdout, /\u001b\[/)
     assert.match(coloredHelp.stdout, /brax/)
     assert.match(coloredHelp.stdout, /--in-place/)
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
+test('run can omit empty archive and source directories without retaining reports', async () => {
+  const temporaryRoot = await mkdtemp(path.join(process.cwd(), '.test-empty-directories-'))
+  try {
+    const emptyArchive = path.join(temporaryRoot, 'empty.brarchive')
+    await writeFile(emptyArchive, makeArchive([]))
+
+    const directOutput = path.join(temporaryRoot, 'direct-output')
+    const directRun = await run({
+      inputPath: emptyArchive,
+      outputPath: directOutput,
+      report: true,
+      omitEmptyDirectories: true,
+    })
+    assert.equal(directRun.archiveErrors, 0)
+    assert.equal(directRun.archives[0]!.reportPath, undefined)
+    await assert.rejects(access(directOutput))
+
+    const discardedArchive = path.join(temporaryRoot, 'discarded.brarchive')
+    await writeFile(discardedArchive, makeArchive([{ name: 'invalid.json', payload: Buffer.from('{ invalid') }]))
+    const discardedOutput = path.join(temporaryRoot, 'discarded-output')
+    const discardedRun = await run({
+      inputPath: discardedArchive,
+      outputPath: discardedOutput,
+      report: true,
+      formatAllJson: true,
+      preserveFailed: false,
+      omitEmptyDirectories: true,
+    })
+    assert.equal(discardedRun.failures.length, 1)
+    assert.equal(discardedRun.archives[0]!.reportPath, undefined)
+    await assert.rejects(access(discardedOutput))
+
+    const inputRoot = path.join(temporaryRoot, 'input')
+    await mkdir(path.join(inputRoot, 'source-empty', 'nested'), { recursive: true })
+    await writeFile(
+      path.join(inputRoot, 'content.brarchive'),
+      makeArchive([{ name: 'value.txt', payload: Buffer.from('value') }]),
+    )
+    await writeFile(path.join(inputRoot, 'filtered.brarchive'), makeArchive([{ name: 'ignored.txt', payload: Buffer.from('ignored') }]))
+
+    const populatedOutput = path.join(temporaryRoot, 'populated-output')
+    await run({ inputPath: inputRoot, outputPath: populatedOutput, omitEmptyDirectories: true })
+    assert.equal(await readFile(path.join(populatedOutput, 'content', 'value.txt'), 'utf8'), 'value')
+    await assert.rejects(access(path.join(populatedOutput, 'source-empty')))
+
+    const directoryOutput = path.join(temporaryRoot, 'directory-output')
+    await run({
+      inputPath: inputRoot,
+      outputPath: directoryOutput,
+      mcbOnly: true,
+      report: true,
+      omitEmptyDirectories: true,
+    })
+    await assert.rejects(access(path.join(directoryOutput, 'source-empty')))
+    await assert.rejects(access(path.join(directoryOutput, 'content')))
+    await assert.rejects(access(path.join(directoryOutput, 'filtered')))
+    await assert.rejects(access(directoryOutput))
+
+    const cliOutput = path.join(temporaryRoot, 'cli-output')
+    const cliPath = path.join(process.cwd(), 'dist', 'src', 'cli.js')
+    const cliRun = spawnSync(
+      process.execPath,
+      [cliPath, emptyArchive, '--output', cliOutput, '--report', '--no-empty-dirs', '--no-verbose'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(cliRun.status, 0, cliRun.stderr)
+    await assert.rejects(access(cliOutput))
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
+test('directory CLI distinguishes incomplete and completely failed archive extraction', async () => {
+  const temporaryRoot = await mkdtemp(path.join(process.cwd(), '.test-archive-status-'))
+  try {
+    const cliPath = path.join(process.cwd(), 'dist', 'src', 'cli.js')
+    const partialInput = path.join(temporaryRoot, 'partial')
+    await mkdir(partialInput, { recursive: true })
+    await writeFile(
+      path.join(partialInput, 'good.brarchive'),
+      makeArchive([{ name: 'value.txt', payload: Buffer.from('value') }]),
+    )
+    await writeFile(path.join(partialInput, 'bad.brarchive'), Buffer.from('not an archive'))
+
+    const partialRun = spawnSync(
+      process.execPath,
+      [cliPath, partialInput, '--output', path.join(temporaryRoot, 'partial-output'), '--list', '--no-verbose'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(partialRun.status, 2, partialRun.stderr)
+    assert.match(partialRun.stdout, /^\[INCOMPLETE\]/)
+    assert.match(partialRun.stdout, /Archive failures:/)
+    assert.doesNotMatch(partialRun.stdout, /Archive results:/)
+    assert.doesNotMatch(partialRun.stdout, /good\.brarchive/)
+
+    const failedInput = path.join(temporaryRoot, 'failed')
+    await mkdir(failedInput, { recursive: true })
+    await writeFile(path.join(failedInput, 'first.brarchive'), Buffer.from('bad one'))
+    await writeFile(path.join(failedInput, 'second.brarchive'), Buffer.from('bad two'))
+    const failedRun = spawnSync(
+      process.execPath,
+      [cliPath, failedInput, '--output', path.join(temporaryRoot, 'failed-output'), '--no-verbose'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(failedRun.status, 1, failedRun.stderr)
+    assert.match(failedRun.stdout, /^\[FAILED\]/)
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }

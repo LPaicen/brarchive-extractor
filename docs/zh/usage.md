@@ -62,6 +62,8 @@ test/input/vanilla/__brarchive/entities.brarchive
 
 归档内部条目的相对路径和文件名保持不变。目录输入中的普通文件也按相对路径复制到输出根；其中包括 JSON、NBT、图片和其他非 JSON 文件。`--mcb-only` 模式只保留魔数为 MCB 的归档条目和普通源文件，其余内容全部忽略。
 
+`--no-empty-dirs` 会省略没有实际写出任何条目的归档输出目录，包括结构本来就为空的归档、经过 `--mcb-only` 筛选后为空的归档，以及唯一失败条目被 `--discard-failed` 丢弃的归档。源目录中本来就存在的空目录也不会复制。`--report` 生成的是元数据而不是解包内容，因此一个归档在除此之外为空时，其报告和目录都不会写出。
+
 使用 `--output` 可以指定其他输出根：
 
 ```powershell
@@ -176,8 +178,8 @@ brax .\input -s .\bds-schema --json-format compact
 
 - 解析失败后继续处理；
 - 将失败文件原样保留到目标路径；
-- 最终退出码为 `2`；
-- 简要汇总只显示失败数量，使用 `--list` 查看详情。
+- 出现条目级问题时把结果归为不完整，并在处理结束后以状态码 `2` 退出；
+- 简要汇总只显示问题数量，使用 `--list` 查看详情。
 
 `--discard-failed` 不写入当前解析失败的文件。它不会删除由其他输入来源或以前运行产生的文件。`--fail-fast` 会在第一次解析失败后停止，并强制保留触发失败的原文件，因此与 `--discard-failed` 同用时后者无效。
 
@@ -185,13 +187,21 @@ brax .\input -s .\bds-schema --json-format compact
 
 详细进度默认开启。在交互式终端中，第一行显示当前阶段和文件，第二行显示当前归档或普通源文件批次的进度，第三行显示整个解包任务的总进度。两个进度条都显示百分比和 `当前值/总数`。使用 `--no-verbose` 关闭；重定向输出时实时进度自动禁用，避免日志刷屏。
 
-处理完成后默认只显示一份总体汇总。使用 `--list` 展开普通源文件统计、每个归档结果、失败详情和冲突决策：
+处理完成后默认只显示一份总体汇总。使用 `--list` 仅显示归档和条目的失败详情：
 
 ```powershell
 brax .\input -s .\bds-schema --list
 ```
 
-使用 `--report` 会在每个归档的输出目录写入 `.brarchive-report.json`。报告属于工具日志，不受 `--json-format` 影响。
+使用 `--list-all` 可显示普通源文件统计、每个归档结果、失败详情和冲突决策：
+
+```powershell
+brax .\input -s .\bds-schema --list-all
+```
+
+如果归档容器成功解包，但 MCB 还原或普通 JSON 格式化发生错误，该归档显示为 `[INCOMPLETE]`，不会显示为 `[FAILED]`。只有归档容器本身无法解析时才使用 `[FAILED]`。目录模式下，只有全部归档都无法解包时总体结果才是 `[FAILED]`；只要至少一个归档成功解包，混合结果就是 `[INCOMPLETE]`。
+
+使用 `--report` 会在每个非空归档的输出目录写入 `.brarchive-report.json`。报告属于工具日志，不受 `--json-format` 影响。使用 `--no-empty-dirs` 时，没有生成任何解包文件的归档也不会生成报告。
 
 ## 完整参数
 
@@ -207,17 +217,19 @@ brax .\input -s .\bds-schema --list
     --verbose
     --no-verbose
 -l, --list
+-L, --list-all
 -j, --json-format <pretty|compact>
--a, --format-all-json
+-J, --format-all-json
     --indent-size <0-10>
     --indent-char <space|tab>
 -F, --fail-fast
 -D, --discard-failed
     --mcb-only
+    --no-empty-dirs
     --split-archives
 -i, --in-place
 -h, --help
 -v, --version
 ```
 
-退出码：`0` 表示成功，`1` 表示参数、schema、冲突交互或其他致命错误，`2` 表示处理结束但存在条目还原或归档解析失败。
+退出码：`0` 表示完全成功；`1` 表示参数、schema、冲突交互或其他致命错误，或者全部输入归档都无法解包；`2` 表示由于条目级问题、部分归档失败或 `--fail-fast` 而未完整完成，但并非全部归档都无法解包。

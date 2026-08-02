@@ -48,7 +48,7 @@ brax .\input --in-place --schema .\bds-schema
 
 For a non-empty output directory, use `--overwrite` to preserve unrelated content and replace matching files. Use `-f` or `--force` to clear the entire output directory before processing. Clearing is irreversible, and `--force` cannot be combined with `--overwrite`.
 
-Ordinary files in directory inputs are copied unchanged unless `--format-all-json` applies. `--mcb-only` ignores all non-MCB content. Use `--split-archives` to keep `foo.brarchive/` output separate from a sibling `foo/` tree.
+Ordinary files in directory inputs are copied unchanged unless `--format-all-json` applies. `--mcb-only` ignores all non-MCB content. `--no-empty-dirs` omits archive output directories that contain no extracted files; reports do not make an otherwise empty directory eligible. Use `--split-archives` to keep `foo.brarchive/` output separate from a sibling `foo/` tree.
 
 ## Schema
 
@@ -79,14 +79,16 @@ Enter `o`, `k`, or `c` to overwrite, keep the existing file, or coexist as `name
 -p, --report             Write .brarchive-report.json for each archive
     --verbose            Show status and progress (default)
     --no-verbose         Disable status and progress
--l, --list               List archive, failure, and conflict details
+-l, --list               List failure details only
+-L, --list-all           List archive, failure, and conflict details
 -j, --json-format <mode> Use pretty or compact restored MCB JSON
--a, --format-all-json    Format ordinary .json files; preserve comments
+-J, --format-all-json    Format ordinary .json files; preserve comments
     --indent-size <0-10> Pretty JSON indentation width (default: 2)
     --indent-char <value> Indent with space or tab (default: space)
 -F, --fail-fast          Stop after the first parsing failure
 -D, --discard-failed     Do not write failed files; ignored with --fail-fast
     --mcb-only           Extract and restore MCB only
+    --no-empty-dirs      Do not create directories without extracted files
     --split-archives     Keep same-named archives and directories separate
 -i, --in-place           Write directly into the source layout
 -h, --help               Show help

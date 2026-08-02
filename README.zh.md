@@ -48,7 +48,7 @@ brax .\input --in-place --schema .\bds-schema
 
 输出目录非空时，使用 `--overwrite` 保留目录中的其他内容并覆盖同名文件；使用 `-f` 或 `--force` 会先清空整个输出目录再开始处理。清空操作不可恢复，且 `--force` 不能与 `--overwrite` 同用。
 
-目录输入中的普通文件会原样复制，`--format-all-json` 除外；`--mcb-only` 会忽略所有非 MCB 内容。使用 `--split-archives` 可分别保存 `foo.brarchive/` 与同级 `foo/` 的内容。
+目录输入中的普通文件会原样复制，`--format-all-json` 除外；`--mcb-only` 会忽略所有非 MCB 内容。`--no-empty-dirs` 会省略没有任何解包文件的归档输出目录，报告不能使空目录被保留。使用 `--split-archives` 可分别保存 `foo.brarchive/` 与同级 `foo/` 的内容。
 
 ## Schema
 
@@ -79,14 +79,16 @@ metadata/json_schemas/
 -p, --report             为每个归档生成 .brarchive-report.json
     --verbose            显示状态和进度条（默认）
     --no-verbose         关闭状态和进度条
--l, --list               列出归档结果、失败和冲突详情
+-l, --list               仅列出失败详情
+-L, --list-all           列出归档结果、失败和冲突详情
 -j, --json-format <mode> restored MCB JSON 使用 pretty 或 compact
--a, --format-all-json    格式化普通 .json 文件并保留注释
+-J, --format-all-json    格式化普通 .json 文件并保留注释
     --indent-size <0-10> pretty JSON 的缩进宽度（默认 2）
     --indent-char <value> 使用 space 或 tab 缩进（默认 space）
 -F, --fail-fast          第一次解析失败后停止
 -D, --discard-failed     不写出解析失败文件；与 --fail-fast 同用时无效
     --mcb-only           只提取并还原 MCB
+    --no-empty-dirs      不生成没有解包文件的目录
     --split-archives     分开保存同名归档和目录
 -i, --in-place           直接写入源结构
 -h, --help               显示帮助
