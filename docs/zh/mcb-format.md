@@ -35,7 +35,7 @@ EOF         ::= 不再剩余任何字节
 ```bnf
 mcb-file      ::= magic format-version payload-key root-payload EOF
 magic         ::= %x7F %x4D %x43 %x42
-format-version ::= u16le-major u16le-minor u32le-patch
+format-version ::= u16le-major u16le-minor u16le-patch string-pre-release string-build-meta
 payload-key   ::= string
 root-payload  ::= value(select-root(payload-key, format-version))
 ```
@@ -45,8 +45,10 @@ root-payload  ::= value(select-root(payload-key, format-version))
 | `0x00` | 4 | 固定字节 | `7F 4D 43 42`，作为 `uint32 LE` 时为 `0x42434D7F` |
 | `0x04` | 2 | `uint16 LE` | format version major 分量 |
 | `0x06` | 2 | `uint16 LE` | format version minor 分量 |
-| `0x08` | 4 | `uint32 LE` | format version patch 分量 |
-| `0x0C` | 可变 | `string` | payload key |
+| `0x08` | 2 | `uint16 LE` | format version patch 分量 |
+| `0x0A` | 可变 | `string` | 语义版本 pre-release 分量 |
+| 后续 | 可变 | `string` | 语义版本 build metadata 分量 |
+| 后续 | 可变 | `string` | payload key |
 | 后续 | 可变 | schema 决定 | 根 payload |
 
 例如，下面的前缀表示 format version `1.26.10`、payload key `particle_effect`：
@@ -54,6 +56,14 @@ root-payload  ::= value(select-root(payload-key, format-version))
 ```hex
 7F 4D 43 42  01 00  1A 00  0A 00 00 00
 0F 70 61 72 74 69 63 6C 65 5F 65 66 66 65 63 74
+```
+
+此例中，`uint16` patch 后面的两个零字节分别是空的 pre-release 和 build metadata 字符串。旧版解码器把这四个字节整体当作一个 `uint32` patch，因此在普通数字版本上看起来也能正常工作。
+
+Bedrock 的 `SemVersion::fromString` 会把特殊 JSON 值 `beta` 映射为 `9999.9999.9999-beta`。因此，beta MCB 文件头会依次保存三个值为 `9999` 的 `uint16 LE`、字符串 `beta` 和一个空的 build metadata 字符串。`brax` 会在选择 schema 前把这一精确表示还原为 `beta`：
+
+```bnf
+beta-format-version ::= u16le(9999) u16le(9999) u16le(9999) string("beta") string("")
 ```
 
 末尾的 `EOF` 校验很重要。选择错误分支后，解码器仍可能产生表面合理的值，但只要存在尾随字节，就能证明所选 schema 路径没有描述完整 payload。
@@ -68,7 +78,7 @@ contents.json
 metadata/json_schemas/
 ```
 
-`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，解析相对 `$ref` 和 JSON Pointer 片段，并按 `title` 对根候选分组。对于数字版本，优先选择不高于 MCB format version 的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。
+`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，解析相对 `$ref` 和 JSON Pointer 片段，并按 `title` 对根候选分组。对于数字版本，优先选择不高于 MCB format version 的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。`beta` 等特殊版本必须与 `x-format-version` 精确匹配；缺少 beta schema 时不会改用数字版本 schema。
 
 多数 payload key 与根 schema 标题相同。目前 BDS 导出需要以下已确认别名：
 

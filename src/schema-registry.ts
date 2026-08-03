@@ -211,11 +211,25 @@ export class SchemaRegistry {
     }
 
     const target = parseNumericVersion(mcbFormatVersion)
+    if (target === undefined) {
+      const normalizedVersion = mcbFormatVersion.trim().toLocaleLowerCase('en-US')
+      const exactCandidate = candidates.find(
+        document => document.version?.trim().toLocaleLowerCase('en-US') === normalizedVersion,
+      )
+      if (exactCandidate !== undefined) {
+        return exactCandidate
+      }
+      throw new ToolError(
+        'missing-schema',
+        `No root schema found for payload key ${JSON.stringify(payloadKey)} and format version ${JSON.stringify(mcbFormatVersion)}`,
+      )
+    }
+
     const numericCandidates = candidates
       .map(document => ({ document, version: parseNumericVersion(document.version) }))
       .filter((item): item is { document: SchemaDocument; version: number[] } => item.version !== undefined)
 
-    if (target !== undefined && numericCandidates.length > 0) {
+    if (numericCandidates.length > 0) {
       const compatible = numericCandidates.filter(item => compareVersions(item.version, target) <= 0)
       const pool = compatible.length > 0 ? compatible : numericCandidates
       pool.sort((left, right) => compareVersions(right.version, left.version))

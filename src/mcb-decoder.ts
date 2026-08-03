@@ -4,6 +4,8 @@ import { type JsonSchema, type SchemaDocument, SchemaRegistry } from './schema-r
 
 const MCB_MAGIC = 0x42434d7f
 const MAX_CONTAINER_ITEMS = 1_000_000
+// SemVersion::fromString("beta") uses 9999.9999.9999-beta internally.
+const BETA_VERSION_COMPONENT = 9999
 
 // Some exported oneOf schemas describe JSON spellings while the binary stores one normalized representation.
 const TAGGED_VARIANT_TITLES_WITHOUT_ORDINALS = new Set(['particle_appearance_tinting color_data', 'particle_curve'])
@@ -22,6 +24,8 @@ export interface BinaryHeader {
   major: number
   minor: number
   patch: number
+  preRelease: string
+  buildMeta: string
   formatVersion: string
   payloadKey: string
 }
@@ -54,6 +58,28 @@ function formatHex32(value: number): string {
   return `0x${value.toString(16).padStart(8, '0').toUpperCase()}`
 }
 
+function formatBinaryHeaderVersion(
+  major: number,
+  minor: number,
+  patch: number,
+  preRelease: string,
+  buildMeta: string,
+): string {
+  if (
+    major === BETA_VERSION_COMPONENT &&
+    minor === BETA_VERSION_COMPONENT &&
+    patch === BETA_VERSION_COMPONENT &&
+    preRelease === 'beta' &&
+    buildMeta === ''
+  ) {
+    return 'beta'
+  }
+
+  return `${major}.${minor}.${patch}${preRelease === '' ? '' : `-${preRelease}`}${
+    buildMeta === '' ? '' : `+${buildMeta}`
+  }`
+}
+
 function mergeReference(target: JsonSchema, source: JsonSchema): JsonSchema {
   const { $ref: _sourceReference, ...sourceMetadata } = source
   return { ...target, ...sourceMetadata }
@@ -77,8 +103,10 @@ export class McbDecoder {
 
     const major = this.#reader.readUint16('MCB format version major component')
     const minor = this.#reader.readUint16('MCB format version minor component')
-    const patch = this.#reader.readUint32('MCB format version patch component')
-    const formatVersion = `${major}.${minor}.${patch}`
+    const patch = this.#reader.readUint16('MCB format version patch component')
+    const preRelease = this.#reader.readString('MCB format version pre-release component')
+    const buildMeta = this.#reader.readString('MCB format version build metadata component')
+    const formatVersion = formatBinaryHeaderVersion(major, minor, patch, preRelease, buildMeta)
     const payloadKey = this.#reader.readString('MCB payload key')
     const root = this.registry.selectRoot(payloadKey, formatVersion)
 
@@ -96,7 +124,7 @@ export class McbDecoder {
       ? { [payloadKey]: decoded }
       : { format_version: outputFormatVersion, [payloadKey]: decoded }
     return {
-      header: { major, minor, patch, formatVersion, payloadKey },
+      header: { major, minor, patch, preRelease, buildMeta, formatVersion, payloadKey },
       schemaId: root.id,
       schemaVersion: root.version,
       value,

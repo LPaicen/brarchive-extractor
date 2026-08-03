@@ -35,7 +35,7 @@ All fixed-width multi-byte values are little-endian.
 ```bnf
 mcb-file      ::= magic format-version payload-key root-payload EOF
 magic         ::= %x7F %x4D %x43 %x42
-format-version ::= u16le-major u16le-minor u32le-patch
+format-version ::= u16le-major u16le-minor u16le-patch string-pre-release string-build-meta
 payload-key   ::= string
 root-payload  ::= value(select-root(payload-key, format-version))
 ```
@@ -45,8 +45,10 @@ root-payload  ::= value(select-root(payload-key, format-version))
 | `0x00` | 4 | literal bytes | `7F 4D 43 42`, or `0x42434D7F` as a `uint32 LE` |
 | `0x04` | 2 | `uint16 LE` | format version major component |
 | `0x06` | 2 | `uint16 LE` | format version minor component |
-| `0x08` | 4 | `uint32 LE` | format version patch component |
-| `0x0C` | variable | `string` | payload key |
+| `0x08` | 2 | `uint16 LE` | format version patch component |
+| `0x0A` | variable | `string` | semantic-version pre-release component |
+| following | variable | `string` | semantic-version build metadata component |
+| following | variable | `string` | payload key |
 | following | variable | schema-defined | root payload |
 
 For example, the prefix below represents format version `1.26.10` and payload key `particle_effect`:
@@ -54,6 +56,14 @@ For example, the prefix below represents format version `1.26.10` and payload ke
 ```hex
 7F 4D 43 42  01 00  1A 00  0A 00 00 00
 0F 70 61 72 74 69 63 6C 65 5F 65 66 66 65 63 74
+```
+
+The two zero bytes after the `uint16` patch in this example are the empty pre-release and build-metadata strings. This made older decoders appear to work when they treated those four bytes as one `uint32` patch value.
+
+Bedrock's `SemVersion::fromString` maps the special JSON value `beta` to `9999.9999.9999-beta`. Consequently, a beta MCB header stores three `uint16 LE` values equal to `9999`, followed by the string `beta` and an empty build-metadata string. `brax` normalizes that exact representation back to `beta` before selecting a schema:
+
+```bnf
+beta-format-version ::= u16le(9999) u16le(9999) u16le(9999) string("beta") string("")
 ```
 
 The final `EOF` check is important. A decoder can produce plausible values after choosing a wrong branch, but any trailing bytes prove that the selected schema path did not describe the complete payload.
@@ -68,7 +78,7 @@ contents.json
 metadata/json_schemas/
 ```
 
-`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, resolves relative `$ref` and JSON Pointer fragments, and groups root candidates by `title`. For numeric versions, it chooses the newest `x-format-version` not newer than the MCB format version. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption.
+`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, resolves relative `$ref` and JSON Pointer fragments, and groups root candidates by `title`. For numeric versions, it chooses the newest `x-format-version` not newer than the MCB format version. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption. Special versions such as `beta` require an exact `x-format-version` match; a numeric schema is not substituted for a missing beta schema.
 
 Most payload keys equal the root schema title. The BDS export currently requires these confirmed aliases:
 

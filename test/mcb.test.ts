@@ -14,13 +14,24 @@ function mcbString(value: string): Buffer {
   return Buffer.concat([Buffer.from([bytes.length]), bytes])
 }
 
-function makeMcb(payloadKey: string, payload: Buffer, formatVersion: readonly [number, number, number] = [1, 26, 30]): Buffer {
-  const header = Buffer.alloc(12)
+function makeMcb(
+  payloadKey: string,
+  payload: Buffer,
+  formatVersion: readonly [number, number, number] | 'beta' = [1, 26, 30],
+): Buffer {
+  const header = Buffer.alloc(10)
+  const components = formatVersion === 'beta' ? ([9999, 9999, 9999] as const) : formatVersion
   header.writeUInt32LE(0x42434d7f, 0)
-  header.writeUInt16LE(formatVersion[0], 4)
-  header.writeUInt16LE(formatVersion[1], 6)
-  header.writeUInt32LE(formatVersion[2], 8)
-  return Buffer.concat([header, mcbString(payloadKey), payload])
+  header.writeUInt16LE(components[0], 4)
+  header.writeUInt16LE(components[1], 6)
+  header.writeUInt16LE(components[2], 8)
+  return Buffer.concat([
+    header,
+    mcbString(formatVersion === 'beta' ? 'beta' : ''),
+    mcbString(''),
+    mcbString(payloadKey),
+    payload,
+  ])
 }
 
 function makeArchive(entries: Array<{ name: string; payload: Buffer }>): Buffer {
@@ -72,6 +83,8 @@ test('McbDecoder uses ordinal order, defaults and optional presence', async () =
       major: 1,
       minor: 0,
       patch: 0,
+      preRelease: '',
+      buildMeta: '',
       formatVersion: '1.0.0',
       payloadKey: 'test_document',
     })
@@ -124,6 +137,64 @@ test('McbDecoder uses ordinal order, defaults and optional presence', async () =
     assert.equal(mcbOnly.archives[0]!.selectedEntries, 1)
     assert.equal(mcbOnly.archives[0]!.processedEntries, 1)
     assert.equal(mcbOnly.archives[0]!.skippedEntries, 1)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('McbDecoder restores beta versions with the matching beta schema', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-beta-schema-'))
+  try {
+    const schemaRoot = path.join(root, 'metadata', 'json_schemas', 'test')
+    await mkdir(path.join(schemaRoot, '1.0.0'), { recursive: true })
+    await mkdir(path.join(schemaRoot, 'beta'), { recursive: true })
+    await writeFile(path.join(root, 'exist.json'), '{"version":"test"}')
+    await writeFile(path.join(root, 'contents.json'), '[]')
+    await writeFile(
+      path.join(schemaRoot, '1.0.0', 'root.json'),
+      JSON.stringify({
+        title: 'beta_document',
+        $id: '/test/1.0.0/root.json',
+        'x-format-version': '1.0.0',
+        type: 'object',
+        properties: {
+          numericValue: { type: 'integer', 'x-underlying-type': 'uint32', 'x-ordinal-index': 0 },
+        },
+        required: ['numericValue'],
+      }),
+    )
+    await writeFile(
+      path.join(schemaRoot, 'beta', 'root.json'),
+      JSON.stringify({
+        title: 'beta_document',
+        $id: '/test/beta/root.json',
+        'x-format-version': 'beta',
+        type: 'object',
+        properties: {
+          name: { type: 'string', 'x-ordinal-index': 0 },
+        },
+        required: ['name'],
+      }),
+    )
+
+    const decoded = new McbDecoder(await SchemaRegistry.load(root)).decode(
+      makeMcb('beta_document', mcbString('preview'), 'beta'),
+    )
+    assert.deepEqual(decoded.header, {
+      major: 9999,
+      minor: 9999,
+      patch: 9999,
+      preRelease: 'beta',
+      buildMeta: '',
+      formatVersion: 'beta',
+      payloadKey: 'beta_document',
+    })
+    assert.equal(decoded.schemaId, '/test/beta/root.json')
+    assert.equal(decoded.schemaVersion, 'beta')
+    assert.deepEqual(decoded.value, {
+      format_version: 'beta',
+      beta_document: { name: 'preview' },
+    })
   } finally {
     await rm(root, { recursive: true, force: true })
   }
