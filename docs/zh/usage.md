@@ -140,15 +140,11 @@ Output conflict 1/3 (3 conflicts total)
 
 不提供 `--schema` 时，MCB 按原始字节解包。提供 schema 后，成功还原的 MCB 会在原目标路径写成 JSON；失败时默认保留原始 MCB。
 
-schema 根目录必须包含：
+`--schema` 可以指向标准 bds-docs 导出根目录，也可以指向独立的 schema 目录。存在 `metadata/json_schemas/` 时，`brax` 会扫描这个约定目录；否则递归扫描用户指定的根目录。可用的根目录只需要至少包含一个带 `$id` 的有效 JSON Schema。
 
-```text
-exist.json
-contents.json
-metadata/json_schemas/
-```
+`exist.json` 和 `contents.json` 都是可选文件。`exist.json` 存在时用于读取导出版本；如果文件缺失、无法读取或没有字符串 `version`，控制台摘要会显示 `unknown version`。解码不需要 `contents.json`。
 
-这些文件由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 从 BDS 导出数据生成。`exist.json` 提供导出版本等元数据，`contents.json` 列出导出内容根项；两者也是本工具识别 schema 根目录的必要标记。实际解码规则来自 `metadata/json_schemas` 中的 `$id`、`title`、`x-format-version`、`x-ordinal-index`、`x-underlying-type` 等字段。
+标准导出由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 从 BDS 数据生成。实际解码规则来自 `$id`、`title`、`x-format-version`、`x-ordinal-index`、`x-underlying-type` 等 schema 字段，与目录布局无关。
 
 只提取和还原 MCB：
 

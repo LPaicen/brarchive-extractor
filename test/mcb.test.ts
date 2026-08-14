@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -70,6 +71,51 @@ test('Minecraft document catalog covers the symbolized MinecraftDocumentInput pa
   }
 })
 
+test('SchemaRegistry accepts a recursive schema root without bds-docs metadata', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-standalone-schema-'))
+  try {
+    const schemaDirectory = path.join(root, 'schemas', 'nested')
+    await mkdir(schemaDirectory, { recursive: true })
+    await writeFile(path.join(root, 'exist.json'), '{invalid optional metadata')
+    await writeFile(
+      path.join(schemaDirectory, 'root.json'),
+      JSON.stringify({
+        title: 'standalone_document',
+        $id: '/standalone/1.0.0/root.json',
+        'x-format-version': '1.0.0',
+        type: 'object',
+        properties: { name: { type: 'string', 'x-ordinal-index': 0 } },
+        required: ['name'],
+      }),
+    )
+
+    const registry = await SchemaRegistry.load(root)
+    assert.equal(registry.exportVersion, undefined)
+    assert.equal(registry.selectRoot('standalone_document', '1.0.0').title, 'standalone_document')
+
+    const archivePath = path.join(root, 'sample.brarchive')
+    await writeFile(
+      archivePath,
+      makeArchive([
+        {
+          name: 'restored.json',
+          payload: makeMcb('standalone_document', mcbString('value'), [1, 0, 0]),
+        },
+      ]),
+    )
+    const cliPath = path.join(process.cwd(), 'dist', 'src', 'cli.js')
+    const cliRun = spawnSync(
+      process.execPath,
+      [cliPath, archivePath, '--schema', root, '--output', path.join(root, 'output'), '--no-verbose'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(cliRun.status, 0, cliRun.stderr)
+    assert.match(cliRun.stdout, /Schema: .* \(unknown version\)/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('McbDecoder uses ordinal order, defaults and optional presence', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-schema-'))
   try {
@@ -93,7 +139,9 @@ test('McbDecoder uses ordinal order, defaults and optional presence', async () =
     )
 
     const payload = makeMcb('test_document', Buffer.concat([mcbString('hello'), Buffer.from([1, 0])]), [1, 0, 0])
-    const decoder = new McbDecoder(await SchemaRegistry.load(root))
+    const registry = await SchemaRegistry.load(root)
+    assert.equal(registry.exportVersion, 'test')
+    const decoder = new McbDecoder(registry)
     const decoded = decoder.decode(payload)
     assert.deepEqual(decoded.header, {
       major: 1,

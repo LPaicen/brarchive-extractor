@@ -86,7 +86,7 @@ ${paint('Options:', 'bold', stdoutColor)}
 ${option('-d, --directory', 'Directory mode; process all .brarchive files')}
 ${option('-r, --recursive', 'Scan directories recursively (default)')}
 ${option('    --no-recursive', 'Scan only the specified directory')}
-${option('-s, --schema <path>', 'BDS docs export root containing exist.json and contents.json')}
+${option('-s, --schema <path>', 'Schema root; bds-docs layout or a recursive schema directory')}
 ${option('-o, --output <path>', 'Output root; defaults to <input>_unpacked beside the input')}
 ${option('-w, --overwrite', 'Overwrite existing output files; incompatible with --force')}
 ${option('-f, --force', 'Clear output first; incompatible with --overwrite and --in-place')}
@@ -448,8 +448,8 @@ function printSummary(summary: RunSummary): void {
   if (summary.schemaRoot === undefined) {
     console.log(`  ${paint('Schema:', 'cyan', stdoutColor)} not specified`)
   } else {
-    const version = summary.schemaExportVersion === undefined ? '' : ` (${summary.schemaExportVersion})`
-    console.log(`  ${paint('Schema:', 'cyan', stdoutColor)} ${paint(`${summary.schemaRoot}${version}`, 'dim', stdoutColor)}`)
+    const version = summary.schemaExportVersion ?? 'unknown version'
+    console.log(`  ${paint('Schema:', 'cyan', stdoutColor)} ${paint(`${summary.schemaRoot} (${version})`, 'dim', stdoutColor)}`)
   }
   if (hasIssues) {
     console.log(`  ${paint('Issues:', 'yellow', stdoutColor)} ${summary.failures.length + summary.archiveErrors}; use --list for details`)

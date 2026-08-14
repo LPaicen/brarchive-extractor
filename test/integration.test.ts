@@ -10,10 +10,7 @@ import { SchemaRegistry } from '../src/schema-registry.js'
 
 const fixtureInput = path.resolve(process.cwd(), 'test', 'input')
 const fixtureSchemas = path.resolve(process.cwd(), 'test', 'bds-schema')
-const hasLocalFixtures =
-  existsSync(fixtureInput) &&
-  existsSync(path.join(fixtureSchemas, 'exist.json')) &&
-  existsSync(path.join(fixtureSchemas, 'contents.json'))
+const hasLocalFixtures = existsSync(fixtureInput) && existsSync(fixtureSchemas)
 
 async function collectArchives(directory: string): Promise<string[]> {
   const result: string[] = []

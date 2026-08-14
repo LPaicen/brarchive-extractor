@@ -70,13 +70,13 @@ The final `EOF` check is important. A decoder can produce plausible values after
 
 ## Schema Root Selection
 
-The schema export root must contain:
+`--schema` may point to a standard bds-docs export root or a standalone schema directory. If the conventional directory below exists, it is preferred:
 
 ```text
-exist.json
-contents.json
 metadata/json_schemas/
 ```
+
+Otherwise, `brax` recursively scans the supplied root. At least one valid JSON Schema with `$id` must be found. `exist.json` and `contents.json` are optional; the former supplies the displayed export version, while the latter is not used for decoding. A missing or unreadable export version is displayed as `unknown version`.
 
 `brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, and resolves relative `$ref` and JSON Pointer fragments. Root lookup first derives payload bindings from exported envelope schemas whose properties contain `format_version` and a payload key. It then uses the game payload catalog for cases where the BDS title is semantically different, and finally tries exact or mechanically normalized titles for previously unknown document types. This lets a newly exported envelope document work without another hard-coded alias.
 

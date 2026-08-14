@@ -63,6 +63,23 @@ async function collectJsonFiles(directory: string): Promise<string[]> {
   return result
 }
 
+async function isDirectory(value: string): Promise<boolean> {
+  try {
+    return (await stat(value)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+async function readOptionalExportVersion(rootPath: string): Promise<string | undefined> {
+  try {
+    const exists = JSON.parse(await readFile(path.join(rootPath, 'exist.json'), 'utf8')) as Record<string, unknown>
+    return typeof exists.version === 'string' ? exists.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
 function resolvePointer(root: JsonSchema, fragment: string, ref: string): JsonSchema {
   if (fragment === '' || fragment === '#') {
     return root
@@ -160,39 +177,20 @@ export class SchemaRegistry {
 
   static async load(schemaRoot: string): Promise<SchemaRegistry> {
     const rootPath = path.resolve(schemaRoot)
-    for (const marker of ['exist.json', 'contents.json']) {
-      const markerPath = path.join(rootPath, marker)
-      try {
-        if (!(await stat(markerPath)).isFile()) {
-          throw new Error('not a file')
-        }
-      } catch (error) {
-        throw new ToolError('missing-schema', `Schema root is missing ${marker}: ${rootPath}`, { cause: error })
-      }
+    if (!(await isDirectory(rootPath))) {
+      throw new ToolError('missing-schema', `Schema root is not a directory: ${rootPath}`)
     }
 
-    let exportVersion: string | undefined
-    try {
-      const exists = JSON.parse(await readFile(path.join(rootPath, 'exist.json'), 'utf8')) as Record<string, unknown>
-      if (typeof exists.version === 'string') {
-        exportVersion = exists.version
-      }
-    } catch (error) {
-      throw new ToolError('missing-schema', `Unable to parse exist.json in schema root: ${rootPath}`, { cause: error })
-    }
+    const exportVersion = await readOptionalExportVersion(rootPath)
+    const standardSchemaDirectory = path.join(rootPath, 'metadata', 'json_schemas')
+    const schemaDirectory = (await isDirectory(standardSchemaDirectory)) ? standardSchemaDirectory : rootPath
 
-    const schemaDirectory = path.join(rootPath, 'metadata', 'json_schemas')
-    try {
-      if (!(await stat(schemaDirectory)).isDirectory()) {
-        throw new Error('not a directory')
-      }
-    } catch (error) {
-      throw new ToolError('missing-schema', `Schema root does not contain metadata/json_schemas: ${rootPath}`, {
-        cause: error,
-      })
-    }
-
-    const files = await collectJsonFiles(schemaDirectory)
+    const optionalMetadataFiles = new Set(
+      ['exist.json', 'contents.json'].map(fileName => path.join(rootPath, fileName).toLocaleLowerCase('en-US')),
+    )
+    const files = (await collectJsonFiles(schemaDirectory)).filter(
+      filePath => !optionalMetadataFiles.has(filePath.toLocaleLowerCase('en-US')),
+    )
     const documents: SchemaDocument[] = []
     for (const filePath of files) {
       let schema: JsonSchema
@@ -214,7 +212,7 @@ export class SchemaRegistry {
     }
 
     if (documents.length === 0) {
-      throw new ToolError('missing-schema', `No schemas with $id were found under metadata/json_schemas: ${rootPath}`)
+      throw new ToolError('missing-schema', `No schemas with $id were found under schema root: ${rootPath}`)
     }
     return new SchemaRegistry(rootPath, exportVersion, documents)
   }

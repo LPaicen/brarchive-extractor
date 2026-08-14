@@ -70,13 +70,13 @@ beta-format-version ::= u16le(9999) u16le(9999) u16le(9999) string("beta") strin
 
 ## 根 Schema 选择
 
-schema 导出根目录必须包含：
+`--schema` 可以指向标准 bds-docs 导出根目录，也可以指向独立的 schema 目录。如果存在下面的约定目录，会优先扫描它：
 
 ```text
-exist.json
-contents.json
 metadata/json_schemas/
 ```
+
+否则，`brax` 会递归扫描用户指定的根目录，并要求至少找到一个带 `$id` 的有效 JSON Schema。`exist.json` 和 `contents.json` 都是可选文件；前者只提供运行结果中显示的导出版本，后者不参与解码。导出版本缺失或无法读取时显示 `unknown version`。
 
 `brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，并解析相对 `$ref` 和 JSON Pointer 片段。查找根 schema 时，首先从同时包含 `format_version` 和 payload key 属性的导出外层 schema 自动建立 payload 绑定；对于 BDS 标题与 payload key 语义不同的情况，再使用游戏文档目录；最后才为未知的新文档尝试精确标题或机械规范化后的标题。因此，只要新导出的外层文档保留标准属性关系，就不需要再补一条硬编码别名。
 

@@ -1,6 +1,14 @@
-# brarchive-extractor
-
-[English](./README.md)
+<div align="center">
+  <h1>brarchive-extractor</h1>
+  <p>
+    <a href="https://github.com/LPaicen/brarchive-extractor"><img src="https://img.shields.io/badge/GitHub-LPaicen%2Fbrarchive--extractor-181717?logo=github" alt="GitHub 仓库"></a>
+    <a href="https://github.com/LPaicen/brarchive-extractor/releases"><img src="https://img.shields.io/github/package-json/v/LPaicen/brarchive-extractor?label=version" alt="版本"></a>
+    <a href="https://github.com/LPaicen/brarchive-extractor/blob/main/LICENSE"><img src="https://img.shields.io/github/license/LPaicen/brarchive-extractor" alt="许可证"></a>
+  </p>
+  <p>
+    <a href="./README.md">English</a> | <a href="./README.zh.md">简体中文</a>
+  </p>
+</div>
 
 `brarchive-extractor` 是一个用于 Minecraft Bedrock 资源的 TypeScript 命令行工具。它可以解包单个或批量 `.brarchive` 文件，并可使用 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 生成的 schema 将 MCB 二进制文档还原为 JSON。
 
@@ -52,13 +60,7 @@ brax .\input --in-place --schema .\bds-schema
 
 ## Schema
 
-`--schema` 必须指向 bds-docs 生成结果的根目录，并包含：
-
-```text
-exist.json
-contents.json
-metadata/json_schemas/
-```
+`--schema` 可以指向标准 bds-docs 导出根目录，也可以指向任意包含 JSON Schema 的目录。存在 `metadata/json_schemas/` 时会优先扫描该目录，否则递归扫描用户指定的目录。schema 的最低要求只是至少存在一个带 `$id` 的有效 JSON 文件。
 
 ## 冲突
 
@@ -72,7 +74,7 @@ metadata/json_schemas/
 -d, --directory          将输入作为目录处理
 -r, --recursive          递归扫描目录（默认）
     --no-recursive       只扫描输入目录第一层
--s, --schema <path>      bds-docs schema 导出根目录
+-s, --schema <path>      bds-docs 导出或递归 schema 目录
 -o, --output <path>      指定输出根目录
 -w, --overwrite          覆盖输出目录中的同名旧文件
 -f, --force              先清空整个输出目录
