@@ -203,6 +203,52 @@ test('run formats non-MCB JSON only when requested', async () => {
       await readFile(path.join(cliOutput, 'commented.json'), 'utf8'),
       '{// line comment\n"name":/* block comment */"sample","values":[1,2]}',
     )
+
+    const jsonOnlyOutput = path.join(temporaryRoot, 'cli-json-only')
+    const jsonOnlyRun = spawnSync(
+      process.execPath,
+      [cliPath, archivePath, '--output', jsonOnlyOutput, '--json-only', '--no-verbose'],
+      { encoding: 'utf8' },
+    )
+    assert.equal(jsonOnlyRun.status, 0, jsonOnlyRun.stderr)
+    assert.equal(await readFile(path.join(jsonOnlyOutput, 'data.json'), 'utf8'), originalJson)
+    assert.equal(await readFile(path.join(jsonOnlyOutput, 'commented.json'), 'utf8'), commentedJson)
+    await assert.rejects(access(path.join(jsonOnlyOutput, 'data.txt')))
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
+})
+
+test('json-only filters archive entries and ordinary directory source files', async () => {
+  const temporaryRoot = await mkdtemp(path.join(process.cwd(), '.test-json-only-'))
+  try {
+    const inputRoot = path.join(temporaryRoot, 'input')
+    await mkdir(inputRoot, { recursive: true })
+    await writeFile(path.join(inputRoot, 'source.JSON'), '{"source":true}\n')
+    await writeFile(path.join(inputRoot, 'source.txt'), 'ignored source')
+    const rawMcb = Buffer.from([0x7f, 0x4d, 0x43, 0x42, 0x01])
+    await writeFile(
+      path.join(inputRoot, 'content.brarchive'),
+      makeArchive([
+        { name: 'archive.json', payload: Buffer.from('{"archive":true}\n') },
+        { name: 'compiled.bin', payload: rawMcb },
+        { name: 'archive.txt', payload: Buffer.from('ignored entry') },
+      ]),
+    )
+
+    const outputRoot = path.join(temporaryRoot, 'output')
+    const summary = await run({ inputPath: inputRoot, outputPath: outputRoot, jsonOnly: true })
+
+    assert.equal(await readFile(path.join(outputRoot, 'source.JSON'), 'utf8'), '{"source":true}\n')
+    await assert.rejects(access(path.join(outputRoot, 'source.txt')))
+    assert.equal(await readFile(path.join(outputRoot, 'content', 'archive.json'), 'utf8'), '{"archive":true}\n')
+    assert.deepEqual(await readFile(path.join(outputRoot, 'content', 'compiled.bin')), rawMcb)
+    await assert.rejects(access(path.join(outputRoot, 'content', 'archive.txt')))
+    assert.equal(summary.sourceFiles.selectedFiles, 1)
+    assert.equal(summary.sourceFiles.skippedFiles, 1)
+    assert.equal(summary.archives[0]!.selectedEntries, 2)
+    assert.equal(summary.archives[0]!.skippedEntries, 1)
+    assert.equal(summary.archives[0]!.mcbEntries, 1)
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true })
   }
@@ -283,6 +329,7 @@ test('run continues by default and supports fail-fast processing', async () => {
     assert.equal(listed.status, 2)
     assert.doesNotMatch(listed.stdout, /Archive results:/)
     assert.match(listed.stdout, /Entry failures:/)
+    assert.doesNotMatch(listed.stdout, /use --list for details/)
 
     const allResultsOutput = path.join(temporaryRoot, 'all-results')
     const allResults = spawnSync(
@@ -294,6 +341,7 @@ test('run continues by default and supports fail-fast processing', async () => {
     assert.match(allResults.stdout, /Archive results:/)
     assert.match(allResults.stdout, /\[INCOMPLETE\]/)
     assert.match(allResults.stdout, /Entry failures:/)
+    assert.doesNotMatch(allResults.stdout, /use --list for details/)
 
     const shortFailureOutput = path.join(temporaryRoot, 'short-failure-options')
     const shortFailureRun = spawnSync(

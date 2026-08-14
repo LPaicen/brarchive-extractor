@@ -77,6 +77,7 @@ test('SchemaRegistry accepts a recursive schema root without bds-docs metadata',
     const schemaDirectory = path.join(root, 'schemas', 'nested')
     await mkdir(schemaDirectory, { recursive: true })
     await writeFile(path.join(root, 'exist.json'), '{invalid optional metadata')
+    await writeFile(path.join(root, 'export-report.json'), '{invalid optional metadata')
     await writeFile(
       path.join(schemaDirectory, 'root.json'),
       JSON.stringify({
@@ -92,6 +93,18 @@ test('SchemaRegistry accepts a recursive schema root without bds-docs metadata',
     const registry = await SchemaRegistry.load(root)
     assert.equal(registry.exportVersion, undefined)
     assert.equal(registry.selectRoot('standalone_document', '1.0.0').title, 'standalone_document')
+
+    await writeFile(path.join(root, 'exist.json'), '{"version":"fallback-version"}')
+    await writeFile(
+      path.join(root, 'export-report.json'),
+      JSON.stringify({
+        tool: 'LLClientSchemaExporter',
+        target_minecraft_version: '1.26.30.1',
+        exported_count: 1,
+      }),
+    )
+    const clientRegistry = await SchemaRegistry.load(root)
+    assert.equal(clientRegistry.exportVersion, '1.26.30.1')
 
     const archivePath = path.join(root, 'sample.brarchive')
     await writeFile(
@@ -110,7 +123,60 @@ test('SchemaRegistry accepts a recursive schema root without bds-docs metadata',
       { encoding: 'utf8' },
     )
     assert.equal(cliRun.status, 0, cliRun.stderr)
-    assert.match(cliRun.stdout, /Schema: .* \(unknown version\)/)
+    assert.match(cliRun.stdout, /Schema: .* \(1\.26\.30\.1\)/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('SchemaRegistry resolves LL client exporter refs by physical filename', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-ll-schema-'))
+  try {
+    const schemaDirectory = path.join(root, 'client', 'biome', '1.21.100')
+    await mkdir(schemaDirectory, { recursive: true })
+    const documentPath = path.join(schemaDirectory, 'Client_Biome_Document.json')
+    const objectPath = path.join(schemaDirectory, 'Client_Biome_Object.json')
+    await writeFile(
+      documentPath,
+      JSON.stringify({
+        title: 'Client Biome JSON File',
+        $id: '/client/biome/1.21.100/Client%20Biome%20Document.json',
+        'x-format-version': '1.21.100',
+        type: 'object',
+        required: ['format_version', 'minecraft:client_biome'],
+        properties: {
+          format_version: { type: 'string' },
+          'minecraft:client_biome': { $ref: './Client_Biome_Object.json' },
+        },
+      }),
+    )
+    await writeFile(
+      objectPath,
+      JSON.stringify({
+        title: 'Client Biome Definition',
+        $id: '/client/biome/1.21.100/Client%20Biome%20Object.json',
+        'x-format-version': '1.21.100',
+        type: 'object',
+        properties: {},
+      }),
+    )
+
+    const registry = await SchemaRegistry.load(root)
+    const document = registry.documents.find(candidate => candidate.filePath === documentPath)
+    assert.ok(document)
+    const resolved = registry.resolve('./Client_Biome_Object.json', document)
+    assert.equal(resolved.document.filePath, objectPath)
+
+    assert.throws(
+      () => registry.resolve('./Missing_Object.json', document),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /Referenced schema does not exist: \.\/Missing_Object\.json/)
+        assert.ok(error.message.includes(documentPath), error.message)
+        assert.doesNotMatch(error.message, /from \/client\/biome\/1\.21\.100\/client biome document\.json/)
+        return true
+      },
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }
@@ -164,6 +230,7 @@ test('McbDecoder uses ordinal order, defaults and optional presence', async () =
       makeArchive([
         { name: 'restored.json', payload },
         { name: 'regular.json', payload: Buffer.from(regularJson) },
+        { name: 'notes.txt', payload: Buffer.from('not JSON') },
       ]),
     )
     const compactOutput = path.join(root, 'compact')
@@ -200,7 +267,31 @@ test('McbDecoder uses ordinal order, defaults and optional presence', async () =
     await assert.rejects(access(path.join(mcbOnlyOutput, 'regular.json')))
     assert.equal(mcbOnly.archives[0]!.selectedEntries, 1)
     assert.equal(mcbOnly.archives[0]!.processedEntries, 1)
-    assert.equal(mcbOnly.archives[0]!.skippedEntries, 1)
+    assert.equal(mcbOnly.archives[0]!.skippedEntries, 2)
+
+    const jsonOnlyOutput = path.join(root, 'json-only')
+    const jsonOnly = await run({
+      inputPath: archivePath,
+      outputPath: jsonOnlyOutput,
+      schemaPath: root,
+      jsonOnly: true,
+    })
+    assert.match(await readFile(path.join(jsonOnlyOutput, 'restored.json'), 'utf8'), /"test_document"/)
+    assert.equal(await readFile(path.join(jsonOnlyOutput, 'regular.json'), 'utf8'), regularJson)
+    await assert.rejects(access(path.join(jsonOnlyOutput, 'notes.txt')))
+    assert.equal(jsonOnly.archives[0]!.selectedEntries, 2)
+    assert.equal(jsonOnly.archives[0]!.processedEntries, 2)
+    assert.equal(jsonOnly.archives[0]!.skippedEntries, 1)
+
+    await assert.rejects(
+      run({
+        inputPath: archivePath,
+        outputPath: path.join(root, 'invalid-filter'),
+        mcbOnly: true,
+        jsonOnly: true,
+      }),
+      /--mcb-only cannot be combined with --json-only/,
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }

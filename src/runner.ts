@@ -66,6 +66,16 @@ interface OutputClaim {
   source: string
 }
 
+type ContentFilter = 'all' | 'mcb' | 'json'
+
+function isJsonPath(value: string): boolean {
+  return value.toLocaleLowerCase('en-US').endsWith('.json')
+}
+
+function contentSelected(name: string, mcb: boolean, filter: ContentFilter): boolean {
+  return filter === 'all' || mcb || (filter === 'json' && isJsonPath(name))
+}
+
 async function collectFiles(directory: string, recursive: boolean): Promise<string[]> {
   const result: string[] = []
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -375,7 +385,7 @@ async function planArchives(
   inputRoot: string | undefined,
   outputRoot: string,
   splitArchives: boolean,
-  mcbOnly: boolean,
+  contentFilter: ContentFilter,
 ): Promise<PlannedArchive[]> {
   const result: PlannedArchive[] = []
   for (const archivePath of archivePaths) {
@@ -387,7 +397,9 @@ async function planArchives(
         outputPath,
         reportDestination: path.join(outputPath, '.brarchive-report.json'),
         archive,
-        selectedEntries: mcbOnly ? archive.entries.filter(entry => isMcb(entry.payload)) : archive.entries,
+        selectedEntries: archive.entries.filter(entry =>
+          contentSelected(entry.name, isMcb(entry.payload), contentFilter),
+        ),
       })
     } catch (error) {
       result.push({
@@ -406,14 +418,14 @@ async function planSourceFiles(
   inputRoot: string,
   outputRoot: string,
   files: string[],
-  mcbOnly: boolean,
+  contentFilter: ContentFilter,
 ): Promise<PlannedSourceFile[]> {
   const result: PlannedSourceFile[] = []
   for (const sourcePath of files) {
     const relativePath = path.relative(inputRoot, sourcePath)
     const payload = await readFile(sourcePath)
     const mcb = isMcb(payload)
-    if (mcbOnly && !mcb) {
+    if (!contentSelected(relativePath, mcb, contentFilter)) {
       continue
     }
     result.push({ sourcePath, relativePath, destination: path.resolve(outputRoot, relativePath), payload, mcb })
@@ -520,7 +532,7 @@ async function processSourceFiles(
           }
         }
       }
-    } else if (settings.formatAllJson && plan.relativePath.toLocaleLowerCase('en-US').endsWith('.json')) {
+    } else if (settings.formatAllJson && isJsonPath(plan.relativePath)) {
       report.jsonFiles += 1
       try {
         output = formatJsonWithComments(plan.payload.toString('utf8'), settings)
@@ -625,7 +637,7 @@ async function unpackOne(
     let rawCopy = false
     let failed = false
     if (!isMcb(entry.payload)) {
-      if (settings.formatAllJson && entry.name.toLocaleLowerCase('en-US').endsWith('.json')) {
+      if (settings.formatAllJson && isJsonPath(entry.name)) {
         report.jsonEntries += 1
         try {
           output = formatJsonWithComments(entry.payload.toString('utf8'), settings)
@@ -783,6 +795,9 @@ export async function run(options: RunOptions): Promise<RunSummary> {
   if (inPlace && options.splitArchives === true) {
     throw new ToolError('invalid-option', '--in-place cannot be combined with --split-archives')
   }
+  if (options.mcbOnly === true && options.jsonOnly === true) {
+    throw new ToolError('invalid-option', '--mcb-only cannot be combined with --json-only')
+  }
   let inputInfo
   try {
     inputInfo = await stat(inputPath)
@@ -827,18 +842,19 @@ export async function run(options: RunOptions): Promise<RunSummary> {
 
   const registry = options.schemaPath === undefined ? undefined : await SchemaRegistry.load(options.schemaPath)
   const decoder = registry === undefined ? undefined : new McbDecoder(registry)
+  const contentFilter: ContentFilter = options.jsonOnly === true ? 'json' : options.mcbOnly === true ? 'mcb' : 'all'
   const archives = await planArchives(
     archivePaths,
     directoryMode ? inputPath : undefined,
     outputRoot,
     options.splitArchives ?? false,
-    options.mcbOnly ?? false,
+    contentFilter,
   )
   const sourceFiles = await planSourceFiles(
     inputPath,
     outputRoot,
     loosePaths,
-    options.mcbOnly ?? false,
+    contentFilter,
   )
   const onProgress = createOverallProgressEmitter(sourceFiles.length, archives, options.onProgress)
 

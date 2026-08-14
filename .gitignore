@@ -2,7 +2,11 @@ node_modules/
 dist/
 coverage/
 *.log
+__pycache__/
+*.py[cod]
+tools/*/tests/
+tools/**/config.ini
 .test-*/
-test/input/
-test/input_unpacked
-test/bds-schema/
+tests/input/
+tests/input_unpacked/
+tests/schemas/

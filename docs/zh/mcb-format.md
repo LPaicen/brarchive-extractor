@@ -76,9 +76,9 @@ beta-format-version ::= u16le(9999) u16le(9999) u16le(9999) string("beta") strin
 metadata/json_schemas/
 ```
 
-否则，`brax` 会递归扫描用户指定的根目录，并要求至少找到一个带 `$id` 的有效 JSON Schema。`exist.json` 和 `contents.json` 都是可选文件；前者只提供运行结果中显示的导出版本，后者不参与解码。导出版本缺失或无法读取时显示 `unknown version`。
+否则，`brax` 会递归扫描用户指定的根目录，并要求至少找到一个带 `$id` 的有效 JSON Schema。`exist.json`、`contents.json` 和 `export-report.json` 都是可选元数据。有效的 LLClientSchemaExporter 报告通过 `target_minecraft_version` 提供显示版本，否则由 `exist.json` 的 `version` 提供；`contents.json` 不参与解码。版本元数据缺失或无法读取时显示 `unknown version`。
 
-`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，并解析相对 `$ref` 和 JSON Pointer 片段。查找根 schema 时，首先从同时包含 `format_version` 和 payload key 属性的导出外层 schema 自动建立 payload 绑定；对于 BDS 标题与 payload key 语义不同的情况，再使用游戏文档目录；最后才为未知的新文档尝试精确标题或机械规范化后的标题。因此，只要新导出的外层文档保留标准属性关系，就不需要再补一条硬编码别名。
+`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，并解析相对 `$ref` 和 JSON Pointer 片段。解析时优先遵循标准的 `$id` 相对引用规则；对于 LLClientSchemaExporter 中标题式 `$id` 与下划线物理文件名不一致的文档，相对引用还可以回退到源 schema 旁的实际文件。查找根 schema 时，首先从同时包含 `format_version` 和 payload key 属性的导出外层 schema 自动建立 payload 绑定；对于 BDS 标题与 payload key 语义不同的情况，再使用游戏文档目录；最后才为未知的新文档尝试精确标题或机械规范化后的标题。因此，只要新导出的外层文档保留标准属性关系，就不需要再补一条硬编码别名。
 
 对于数字版本，优先选择不高于 MCB format version 的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。`beta` 等特殊版本必须与 `x-format-version` 精确匹配；缺少 beta schema 时不会改用数字版本 schema。
 

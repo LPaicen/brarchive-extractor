@@ -19,10 +19,11 @@
   },
   "include": [
     "src/**/*.ts",
-    "test/**/*.ts"
+    "tests/**/*.ts"
   ],
   "exclude": [
-    "test/input/**",
-    "test/bds-schema/**"
+    "tests/input/**",
+    "tests/input_unpacked/**",
+    "tests/schemas/**"
   ]
 }

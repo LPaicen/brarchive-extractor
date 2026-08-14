@@ -56,13 +56,13 @@ C:/packs/entities.brarchive
 目录输入默认输出到输入目录旁边的 `<输入目录名>_unpacked`，不会写入输入树：
 
 ```text
-test/input/vanilla/__brarchive/entities.brarchive
-  -> test/input_unpacked/vanilla/__brarchive/entities/agent.json
+tests/input/vanilla/__brarchive/entities.brarchive
+  -> tests/input_unpacked/vanilla/__brarchive/entities/agent.json
 ```
 
-归档内部条目的相对路径和文件名保持不变。目录输入中的普通文件也按相对路径复制到输出根；其中包括 JSON、NBT、图片和其他非 JSON 文件。`--mcb-only` 模式只保留魔数为 MCB 的归档条目和普通源文件，其余内容全部忽略。
+归档内部条目的相对路径和文件名保持不变。目录输入中的普通文件也按相对路径复制到输出根；其中包括 JSON、NBT、图片和其他非 JSON 文件。`--mcb-only` 模式只保留魔数为 MCB 的归档条目和普通源文件。`--json-only` 会在此基础上保留文件名以 `.json` 结尾的内容（不区分大小写），其他内容全部忽略。这两个筛选参数不能同时使用。
 
-`--no-empty-dirs` 会省略没有实际写出任何条目的归档输出目录，包括结构本来就为空的归档、经过 `--mcb-only` 筛选后为空的归档，以及唯一失败条目被 `--discard-failed` 丢弃的归档。源目录中本来就存在的空目录也不会复制。`--report` 生成的是元数据而不是解包内容，因此一个归档在除此之外为空时，其报告和目录都不会写出。
+`--no-empty-dirs` 会省略没有实际写出任何条目的归档输出目录，包括结构本来就为空的归档、经过 `--mcb-only` 或 `--json-only` 筛选后为空的归档，以及唯一失败条目被 `--discard-failed` 丢弃的归档。源目录中本来就存在的空目录也不会复制。`--report` 生成的是元数据而不是解包内容，因此一个归档在除此之外为空时，其报告和目录都不会写出。
 
 使用 `--output` 可以指定其他输出根：
 
@@ -142,7 +142,7 @@ Output conflict 1/3 (3 conflicts total)
 
 `--schema` 可以指向标准 bds-docs 导出根目录，也可以指向独立的 schema 目录。存在 `metadata/json_schemas/` 时，`brax` 会扫描这个约定目录；否则递归扫描用户指定的根目录。可用的根目录只需要至少包含一个带 `$id` 的有效 JSON Schema。
 
-`exist.json` 和 `contents.json` 都是可选文件。`exist.json` 存在时用于读取导出版本；如果文件缺失、无法读取或没有字符串 `version`，控制台摘要会显示 `unknown version`。解码不需要 `contents.json`。
+`exist.json`、`contents.json` 和 `export-report.json` 都是可选文件。对于 LLClientSchemaExporter 导出，如果根目录下 `export-report.json` 的 `tool` 为 `LLClientSchemaExporter`，控制台会读取 `target_minecraft_version` 作为显示的 Minecraft 版本；否则尝试读取 `exist.json` 的字符串 `version`。两个来源都不可读或无效时显示 `unknown version`。解码不需要 `contents.json`。
 
 标准导出由 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 从 BDS 数据生成。实际解码规则来自 `$id`、`title`、`x-format-version`、`x-ordinal-index`、`x-underlying-type` 等 schema 字段，与目录布局无关。
 
@@ -151,6 +151,14 @@ Output conflict 1/3 (3 conflicts total)
 ```powershell
 brax .\input --schema .\bds-schema --mcb-only
 ```
+
+只输出 MCB 还原结果和原本就存在的 JSON 文件，并忽略其他所有文件类型：
+
+```powershell
+brax .\input --schema .\bds-schema --json-only
+```
+
+`--json-only` 选中的普通 JSON 默认保持原始字节不变；同时指定 `--format-all-json` 后才会格式化。
 
 ## JSON 格式
 
@@ -221,6 +229,7 @@ brax .\input -s .\bds-schema --list-all
 -F, --fail-fast
 -D, --discard-failed
     --mcb-only
+    --json-only
     --no-empty-dirs
     --split-archives
 -i, --in-place

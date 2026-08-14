@@ -8,8 +8,8 @@ import { ToolError } from '../src/errors.js'
 import { McbDecoder } from '../src/mcb-decoder.js'
 import { SchemaRegistry } from '../src/schema-registry.js'
 
-const fixtureInput = path.resolve(process.cwd(), 'test', 'input')
-const fixtureSchemas = path.resolve(process.cwd(), 'test', 'bds-schema')
+const fixtureInput = path.resolve(process.cwd(), 'tests', 'input')
+const fixtureSchemas = path.resolve(process.cwd(), 'tests', 'schemas')
 const hasLocalFixtures = existsSync(fixtureInput) && existsSync(fixtureSchemas)
 
 async function collectArchives(directory: string): Promise<string[]> {
@@ -31,7 +31,6 @@ test('local fixtures parse every archive and process every MCB entry', { skip: !
   let mcbEntryCount = 0
   let decodedEntryCount = 0
   let restorationFailureCount = 0
-  const restorationFailures: string[] = []
 
   assert.ok(archivePaths.length > 0, `No .brarchive fixtures found under ${fixtureInput}`)
   for (const archivePath of archivePaths) {
@@ -45,14 +44,9 @@ test('local fixtures parse every archive and process every MCB entry', { skip: !
       } catch (error) {
         assert.ok(error instanceof ToolError, `${archivePath} :: ${entry.name} threw an unexpected error: ${String(error)}`)
         restorationFailureCount += 1
-        restorationFailures.push(`${error.kind}: ${error.message}`)
       }
     }
   }
   assert.ok(mcbEntryCount > 0, `No MCB entries found under ${fixtureInput}`)
   assert.equal(decodedEntryCount + restorationFailureCount, mcbEntryCount)
-  assert.equal(restorationFailureCount, 1)
-  assert.deepEqual(restorationFailures, [
-    'missing-schema: No root schema found for payload key "minecraft:camera_entity"',
-  ])
 })

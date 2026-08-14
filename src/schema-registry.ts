@@ -21,6 +21,26 @@ function normalizeTitle(value: string): string {
   return value.trim().replaceAll('%20', ' ').toLocaleLowerCase('en-US')
 }
 
+function filePathKey(value: string): string {
+  const resolved = path.resolve(value)
+  return process.platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved
+}
+
+function referencedFilePath(referencePart: string, currentFilePath: string): string | undefined {
+  if (referencePart.startsWith('/') || /^[a-z][a-z\d+.-]*:/i.test(referencePart)) {
+    return undefined
+  }
+
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(referencePart)
+  } catch {
+    return undefined
+  }
+  const nativePath = decoded.replaceAll('\\', path.sep).replaceAll('/', path.sep)
+  return path.resolve(path.dirname(currentFilePath), nativePath)
+}
+
 function parseNumericVersion(value: string | undefined): number[] | undefined {
   if (value === undefined || !/^\d+(?:\.\d+)*$/.test(value)) {
     return undefined
@@ -71,13 +91,29 @@ async function isDirectory(value: string): Promise<boolean> {
   }
 }
 
-async function readOptionalExportVersion(rootPath: string): Promise<string | undefined> {
+async function readOptionalJsonObject(filePath: string): Promise<Record<string, unknown> | undefined> {
   try {
-    const exists = JSON.parse(await readFile(path.join(rootPath, 'exist.json'), 'utf8')) as Record<string, unknown>
-    return typeof exists.version === 'string' ? exists.version : undefined
+    const value = JSON.parse(await readFile(filePath, 'utf8')) as unknown
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined
   } catch {
     return undefined
   }
+}
+
+async function readOptionalExportVersion(rootPath: string): Promise<string | undefined> {
+  const report = await readOptionalJsonObject(path.join(rootPath, 'export-report.json'))
+  if (
+    report?.tool === 'LLClientSchemaExporter' &&
+    typeof report.target_minecraft_version === 'string' &&
+    report.target_minecraft_version.length > 0
+  ) {
+    return report.target_minecraft_version
+  }
+
+  const exists = await readOptionalJsonObject(path.join(rootPath, 'exist.json'))
+  return typeof exists?.version === 'string' && exists.version.length > 0 ? exists.version : undefined
 }
 
 function resolvePointer(root: JsonSchema, fragment: string, ref: string): JsonSchema {
@@ -108,6 +144,7 @@ export class SchemaRegistry {
   readonly exportVersion?: string
   readonly documents: SchemaDocument[]
   readonly #byId: Map<string, SchemaDocument>
+  readonly #byFilePath: Map<string, SchemaDocument>
   readonly #byTitle: Map<string, SchemaDocument[]>
   readonly #byPayloadKey: Map<string, SchemaDocument[]>
 
@@ -116,6 +153,7 @@ export class SchemaRegistry {
     this.exportVersion = exportVersion
     this.documents = documents
     this.#byId = new Map()
+    this.#byFilePath = new Map()
     this.#byTitle = new Map()
     this.#byPayloadKey = new Map()
 
@@ -124,6 +162,7 @@ export class SchemaRegistry {
         throw new ToolError('unsupported-schema', `Duplicate schema $id: ${document.id}`)
       }
       this.#byId.set(document.id, document)
+      this.#byFilePath.set(filePathKey(document.filePath), document)
 
       if (document.title !== undefined) {
         const key = normalizeTitle(document.title)
@@ -186,7 +225,9 @@ export class SchemaRegistry {
     const schemaDirectory = (await isDirectory(standardSchemaDirectory)) ? standardSchemaDirectory : rootPath
 
     const optionalMetadataFiles = new Set(
-      ['exist.json', 'contents.json'].map(fileName => path.join(rootPath, fileName).toLocaleLowerCase('en-US')),
+      ['exist.json', 'contents.json', 'export-report.json'].map(fileName =>
+        path.join(rootPath, fileName).toLocaleLowerCase('en-US'),
+      ),
     )
     const files = (await collectJsonFiles(schemaDirectory)).filter(
       filePath => !optionalMetadataFiles.has(filePath.toLocaleLowerCase('en-US')),
@@ -275,9 +316,16 @@ export class SchemaRegistry {
     if (referencePart !== '') {
       const base = path.posix.dirname(currentDocument.id)
       const id = normalizeId(referencePart.startsWith('/') ? referencePart : path.posix.join(base, referencePart))
-      const found = this.#byId.get(id)
+      let found = this.#byId.get(id)
       if (found === undefined) {
-        throw new ToolError('missing-schema', `Referenced schema does not exist: ${ref} (from ${currentDocument.id})`)
+        const physicalPath = referencedFilePath(referencePart, currentDocument.filePath)
+        found = physicalPath === undefined ? undefined : this.#byFilePath.get(filePathKey(physicalPath))
+      }
+      if (found === undefined) {
+        throw new ToolError(
+          'missing-schema',
+          `Referenced schema does not exist: ${ref} (from ${currentDocument.filePath})`,
+        )
       }
       document = found
     }

@@ -4,6 +4,7 @@ import path from 'node:path'
 import process from 'node:process'
 import { createInterface } from 'node:readline/promises'
 import { ToolError, toToolError } from './errors.js'
+import { formatProgressSpeed, ProgressSpeedTracker } from './progress-speed.js'
 import {
   run,
   type ArchiveReport,
@@ -102,6 +103,7 @@ ${option('    --indent-char <value>', 'Indent with space or tab (default: space)
 ${option('-F, --fail-fast', 'Stop processing after the first entry or archive failure')}
 ${option('-D, --discard-failed', 'Do not keep failed entries; ignored with --fail-fast')}
 ${option('    --mcb-only', 'Extract and restore MCB entries only')}
+${option('    --json-only', 'Extract MCB and existing JSON entries only')}
 ${option('    --no-empty-dirs', 'Do not create directories without extracted files')}
 ${option('    --split-archives', 'Keep foo.brarchive and foo directory outputs separate')}
 ${option('-i, --in-place', 'Write into the source tree; incompatible with --output, --split-archives, and --force')}
@@ -216,6 +218,9 @@ function parseArguments(args: string[]): CliOptions | undefined {
       case '--mcb-only':
         options.mcbOnly = true
         break
+      case '--json-only':
+        options.jsonOnly = true
+        break
       case '--no-empty-dirs':
         options.omitEmptyDirectories = true
         break
@@ -280,7 +285,7 @@ function createProgressReporter(): ProgressReporter | undefined {
   }
 
   const columns = process.stderr.columns || 80
-  const barsize = Math.max(10, Math.min(40, columns - 24))
+  const barsize = Math.max(10, Math.min(40, columns - 44))
   const multibar = new MultiBar(
     {
       stream: process.stderr,
@@ -301,18 +306,23 @@ function createProgressReporter(): ProgressReporter | undefined {
       format: `${paint('Status:', 'cyan', stderrColor)} {status} | ${paint('File:', 'cyan', stderrColor)} {file}`,
     },
   )
-  const progressBar: SingleBar = multibar.create(1, 0, undefined, {
-    format: `${paint('Current:', 'cyan', stderrColor)} [{bar}] {percentage}% | {value}/{total}`,
+  const initialSpeed = formatProgressSpeed(0)
+  const progressBar: SingleBar = multibar.create(1, 0, { speed: initialSpeed }, {
+    format: `${paint('Current:', 'cyan', stderrColor)} [{bar}] {percentage}% | {value}/{total} | {speed}`,
     barsize,
     barCompleteChar: '#',
     barIncompleteChar: '-',
   })
-  const totalProgressBar: SingleBar = multibar.create(1, 0, undefined, {
-    format: `${paint('Total:', 'cyan', stderrColor)}   [{bar}] {percentage}% | {value}/{total}`,
+  const totalProgressBar: SingleBar = multibar.create(1, 0, { speed: initialSpeed }, {
+    format: `${paint('Total:', 'cyan', stderrColor)}   [{bar}] {percentage}% | {value}/{total} | {speed}`,
     barsize,
     barCompleteChar: '#',
     barIncompleteChar: '-',
   })
+
+  const currentSpeed = new ProgressSpeedTracker()
+  const totalSpeed = new ProgressSpeedTracker()
+  let currentStage: string | undefined
 
   return {
     update(progress): void {
@@ -339,13 +349,23 @@ function createProgressReporter(): ProgressReporter | undefined {
           : progress.entryCount === 0 && progress.failed !== true
             ? total
             : Math.min(total, progress.entryIndex ?? 0)
+      const now = performance.now()
+      const stage = copyingSource ? 'copy' : `${progress.archiveIndex}\0${progress.archive}`
+      let currentItemsPerSecond: number
+      if (stage !== currentStage) {
+        currentStage = stage
+        currentSpeed.reset(value, now)
+        currentItemsPerSecond = 0
+      } else {
+        currentItemsPerSecond = currentSpeed.update(value, now)
+      }
       progressBar.setTotal(total)
-      progressBar.update(value)
+      progressBar.update(value, { speed: formatProgressSpeed(currentItemsPerSecond) })
 
       const overallTotal = Math.max(1, progress.overallCount ?? 1)
       const overallValue = Math.min(overallTotal, Math.max(0, progress.overallIndex ?? 0))
       totalProgressBar.setTotal(overallTotal)
-      totalProgressBar.update(overallValue)
+      totalProgressBar.update(overallValue, { speed: formatProgressSpeed(totalSpeed.update(overallValue, now)) })
     },
     stop(): void {
       multibar.stop()
@@ -410,7 +430,7 @@ function summaryCompletionStatus(summary: RunSummary): CompletionStatus {
   return 'ok'
 }
 
-function printSummary(summary: RunSummary): void {
+function printSummary(summary: RunSummary, showListHint: boolean): void {
   const totals = resultTotals(summary.archives)
   totals.processedEntries += summary.sourceFiles.processedFiles
   totals.entries += summary.sourceFiles.files
@@ -452,7 +472,8 @@ function printSummary(summary: RunSummary): void {
     console.log(`  ${paint('Schema:', 'cyan', stdoutColor)} ${paint(`${summary.schemaRoot} (${version})`, 'dim', stdoutColor)}`)
   }
   if (hasIssues) {
-    console.log(`  ${paint('Issues:', 'yellow', stdoutColor)} ${summary.failures.length + summary.archiveErrors}; use --list for details`)
+    const listHint = showListHint ? '; use --list for details' : ''
+    console.log(`  ${paint('Issues:', 'yellow', stdoutColor)} ${summary.failures.length + summary.archiveErrors}${listHint}`)
   }
 }
 
@@ -593,7 +614,7 @@ async function main(): Promise<void> {
     progress?.stop()
   }
 
-  printSummary(summary)
+  printSummary(summary, listResults !== true && listAllResults !== true)
   if (listAllResults === true) {
     printFullResultList(summary)
   } else if (listResults === true) {

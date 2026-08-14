@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/brarchive.test.js dist/test/mcb.test.js dist/test/integration.test.js",
+    "test": "npm run build && node --test dist/tests/brarchive.test.js dist/tests/mcb.test.js dist/tests/integration.test.js dist/tests/progress-speed.test.js",
     "start": "node dist/src/cli.js"
   },
   "keywords": [

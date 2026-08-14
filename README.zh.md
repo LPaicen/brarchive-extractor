@@ -10,7 +10,7 @@
   </p>
 </div>
 
-`brarchive-extractor` 是一个用于 Minecraft Bedrock 资源的 TypeScript 命令行工具。它可以解包单个或批量 `.brarchive` 文件，并可使用 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 生成的 schema 将 MCB 二进制文档还原为 JSON。
+`brarchive-extractor` 是一个用于 Minecraft Bedrock 资源的 TypeScript 命令行工具。它可以解包单个或批量 `.brarchive` 文件，并可根据 schema 将 MCB 二进制文档还原为 JSON。schema 可以来自 Mojang 官方仓库，也可以使用 [bedrock-apis/bds-docs](https://github.com/bedrock-apis/bds-docs) 从 BDS 导出，或使用 [LPaicen/ll-client-schema-exporter](https://github.com/LPaicen/ll-client-schema-exporter) 从客户端导出。
 
 安装后使用简短命令 `brax` 调用工具。
 
@@ -34,7 +34,7 @@ npm link
 brax .\entities.brarchive
 ```
 
-使用 BDS schema 还原 MCB：
+使用导出的 schema 还原 MCB：
 
 ```powershell
 brax .\entities.brarchive --schema .\bds-schema
@@ -56,11 +56,11 @@ brax .\input --in-place --schema .\bds-schema
 
 输出目录非空时，使用 `--overwrite` 保留目录中的其他内容并覆盖同名文件；使用 `-f` 或 `--force` 会先清空整个输出目录再开始处理。清空操作不可恢复，且 `--force` 不能与 `--overwrite` 同用。
 
-目录输入中的普通文件会原样复制，`--format-all-json` 除外；`--mcb-only` 会忽略所有非 MCB 内容。`--no-empty-dirs` 会省略没有任何解包文件的归档输出目录，报告不能使空目录被保留。使用 `--split-archives` 可分别保存 `foo.brarchive/` 与同级 `foo/` 的内容。
+目录输入中的普通文件会原样复制，`--format-all-json` 除外；`--mcb-only` 只保留 MCB 内容，`--json-only` 则保留 MCB 内容和原本就存在的 `.json` 文件，并忽略其他所有文件类型。`--no-empty-dirs` 会省略没有任何解包文件的归档输出目录，报告不能使空目录被保留。使用 `--split-archives` 可分别保存 `foo.brarchive/` 与同级 `foo/` 的内容。
 
 ## Schema
 
-`--schema` 可以指向标准 bds-docs 导出根目录，也可以指向任意包含 JSON Schema 的目录。存在 `metadata/json_schemas/` 时会优先扫描该目录，否则递归扫描用户指定的目录。schema 的最低要求只是至少存在一个带 `$id` 的有效 JSON 文件。
+`--schema` 可以指向标准 [bds-docs](https://github.com/bedrock-apis/bds-docs) 导出根目录、[LL 客户端 schema 导出器](https://github.com/LPaicen/ll-client-schema-exporter) 的导出根目录，也可以指向任意包含 JSON Schema 的目录。存在 `metadata/json_schemas/` 时会优先扫描该目录，否则递归扫描用户指定的目录。schema 的最低要求只是至少存在一个带 `$id` 的有效 JSON 文件。
 
 ## 冲突
 
@@ -74,7 +74,7 @@ brax .\input --in-place --schema .\bds-schema
 -d, --directory          将输入作为目录处理
 -r, --recursive          递归扫描目录（默认）
     --no-recursive       只扫描输入目录第一层
--s, --schema <path>      bds-docs 导出或递归 schema 目录
+-s, --schema <path>      schema 导出或递归 schema 目录
 -o, --output <path>      指定输出根目录
 -w, --overwrite          覆盖输出目录中的同名旧文件
 -f, --force              先清空整个输出目录
@@ -90,6 +90,7 @@ brax .\input --in-place --schema .\bds-schema
 -F, --fail-fast          第一次解析失败后停止
 -D, --discard-failed     不写出解析失败文件；与 --fail-fast 同用时无效
     --mcb-only           只提取并还原 MCB
+    --json-only          只提取 MCB 和原有 JSON
     --no-empty-dirs      不生成没有解包文件的目录
     --split-archives     分开保存同名归档和目录
 -i, --in-place           直接写入源结构
@@ -108,5 +109,3 @@ brax .\input --in-place --schema .\bds-schema
 ```powershell
 npm test
 ```
-
-本地测试数据目录 `test/input/` 和 `test/bds-schema/` 已被 Git 忽略。

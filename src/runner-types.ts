@@ -38,6 +38,7 @@ export interface RunOptions {
   failFast?: boolean
   preserveFailed?: boolean
   mcbOnly?: boolean
+  jsonOnly?: boolean
   splitArchives?: boolean
   inPlace?: boolean
   omitEmptyDirectories?: boolean
