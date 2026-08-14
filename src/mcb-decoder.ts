@@ -1,24 +1,15 @@
 import { BinaryReader } from './binary-reader.js'
 import { ToolError } from './errors.js'
-import { type JsonSchema, type SchemaDocument, SchemaRegistry } from './schema-registry.js'
-
-const MCB_MAGIC = 0x42434d7f
-const MAX_CONTAINER_ITEMS = 1_000_000
-// SemVersion::fromString("beta") uses 9999.9999.9999-beta internally.
-const BETA_VERSION_COMPONENT = 9999
-
-// Some exported oneOf schemas describe JSON spellings while the binary stores one normalized representation.
-const TAGGED_VARIANT_TITLES_WITHOUT_ORDINALS = new Set(['particle_appearance_tinting color_data', 'particle_curve'])
-const ARRAY_REPRESENTATION_VARIANTS = new Set([
-  'vectorevents',
-  'color_expr',
-  'particle_motion_collision_event_vector',
-  'vec3',
-])
-const OBJECT_REPRESENTATION_VARIANTS = new Set(['item descriptor', 'minecraft:icon v1.21.80', 'trade quantity'])
-const BOOLEAN_REPRESENTATION_VARIANTS = new Set(['minecraft:hand_equipped'])
-const INTEGER_REPRESENTATION_VARIANTS = new Set(['minecraft:max_stack_size'])
-const FORMAT_VERSIONLESS_DOCUMENTS = new Set(['tiers'])
+import { documentIncludesFormatVersion } from './minecraft-documents.js'
+import {
+  BETA_VERSION_COMPONENT,
+  MAX_CONTAINER_ITEMS,
+  MCB_MAGIC,
+  oneOfUsesVariantTag,
+  preferredOneOfType,
+} from './mcb-schema-rules.js'
+import { SchemaRegistry } from './schema-registry.js'
+import type { JsonSchema, SchemaDocument } from './schema-types.js'
 
 export interface BinaryHeader {
   major: number
@@ -120,7 +111,7 @@ export class McbDecoder {
     }
 
     const outputFormatVersion = root.version ?? formatVersion
-    const value: Record<string, unknown> = FORMAT_VERSIONLESS_DOCUMENTS.has(payloadKey.toLocaleLowerCase('en-US'))
+    const value: Record<string, unknown> = !documentIncludesFormatVersion(payloadKey)
       ? { [payloadKey]: decoded }
       : { format_version: outputFormatVersion, [payloadKey]: decoded }
     return {
@@ -210,7 +201,7 @@ export class McbDecoder {
 
     const usesVariantTag =
       variants.some(variant => typeof variant['x-ordinal-index'] === 'number') ||
-      TAGGED_VARIANT_TITLES_WITHOUT_ORDINALS.has(title)
+      oneOfUsesVariantTag(title)
 
     if (usesVariantTag) {
       const tagOffset = this.#reader.offset
@@ -226,37 +217,17 @@ export class McbDecoder {
     }
 
     if (title === 'molang string') {
-      const stringVariant = variants.find(variant => schemaType(variant) === 'string')
+      const stringVariant = variants.find(variant => this.#resolvedSchemaType(variant, document) === 'string')
       if (stringVariant !== undefined) {
         return this.#decodeNode(stringVariant, document, schemaPath)
       }
     }
 
-    if (ARRAY_REPRESENTATION_VARIANTS.has(title)) {
-      const arrayVariant = variants.find(variant => schemaType(variant) === 'array')
-      if (arrayVariant !== undefined) {
-        return this.#decodeNode(arrayVariant, document, schemaPath)
-      }
-    }
-
-    if (OBJECT_REPRESENTATION_VARIANTS.has(title)) {
-      const objectVariant = variants.find(variant => schemaType(variant) === 'object')
-      if (objectVariant !== undefined) {
-        return this.#decodeNode(objectVariant, document, schemaPath)
-      }
-    }
-
-    if (BOOLEAN_REPRESENTATION_VARIANTS.has(title)) {
-      const booleanVariant = variants.find(variant => schemaType(variant) === 'boolean')
-      if (booleanVariant !== undefined) {
-        return this.#decodeNode(booleanVariant, document, schemaPath)
-      }
-    }
-
-    if (INTEGER_REPRESENTATION_VARIANTS.has(title)) {
-      const integerVariant = variants.find(variant => schemaType(variant) === 'integer')
-      if (integerVariant !== undefined) {
-        return this.#decodeNode(integerVariant, document, schemaPath)
+    const preferredType = preferredOneOfType(title)
+    if (preferredType !== undefined) {
+      const preferredVariant = variants.find(variant => this.#resolvedSchemaType(variant, document) === preferredType)
+      if (preferredVariant !== undefined) {
+        return this.#decodeNode(preferredVariant, document, schemaPath)
       }
     }
 
@@ -269,6 +240,23 @@ export class McbDecoder {
       `Cannot determine the binary branch of oneOf ${JSON.stringify(schema.title ?? document.id)} without x-ordinal-index`,
       { offset: this.#reader.offset, schemaPath },
     )
+  }
+
+  #resolvedSchemaType(schema: JsonSchema, document: SchemaDocument): string | undefined {
+    let currentSchema = schema
+    let currentDocument = document
+    const visited = new Set<string>()
+    while (typeof currentSchema.$ref === 'string') {
+      const key = `${currentDocument.id}\0${currentSchema.$ref}`
+      if (visited.has(key)) {
+        return undefined
+      }
+      visited.add(key)
+      const resolved = this.registry.resolve(currentSchema.$ref, currentDocument)
+      currentSchema = resolved.schema
+      currentDocument = resolved.document
+    }
+    return schemaType(currentSchema)
   }
 
   #decodeString(schema: JsonSchema, schemaPath: string): string {

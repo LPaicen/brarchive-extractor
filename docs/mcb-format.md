@@ -78,16 +78,24 @@ contents.json
 metadata/json_schemas/
 ```
 
-`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, resolves relative `$ref` and JSON Pointer fragments, and groups root candidates by `title`. For numeric versions, it chooses the newest `x-format-version` not newer than the MCB format version. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption. Special versions such as `beta` require an exact `x-format-version` match; a numeric schema is not substituted for a missing beta schema.
+`brax` recursively indexes JSON schemas with `$id`, normalizes URI paths, and resolves relative `$ref` and JSON Pointer fragments. Root lookup first derives payload bindings from exported envelope schemas whose properties contain `format_version` and a payload key. It then uses the game payload catalog for cases where the BDS title is semantically different, and finally tries exact or mechanically normalized titles for previously unknown document types. This lets a newly exported envelope document work without another hard-coded alias.
 
-Most payload keys equal the root schema title. The BDS export currently requires these confirmed aliases:
+For numeric versions, it chooses the newest `x-format-version` not newer than the MCB format version. If none is old enough, it uses the newest numeric candidate so that an incomplete export can still be tested and then validated by exact byte consumption. Special versions such as `beta` require an exact `x-format-version` match; a numeric schema is not substituted for a missing beta schema.
+
+Representative confirmed payload/title relationships include:
 
 | MCB payload key | BDS schema title | Restored top-level member |
 |---|---|---|
 | `particle_effect` | `particle_effect` | `particle_effect` |
+| `minecraft:block` | `BlockDefinitionDocument` | `minecraft:block` |
+| `minecraft:biome` | `Biome Definition` | `minecraft:biome` |
+| `minecraft:crafting_items_catalog` | `Crafting Catalog Document` | `minecraft:crafting_items_catalog` |
+| `minecraft:feature_rules` | `Feature Rule Definition` | `minecraft:feature_rules` |
 | `minecraft:voxel_shape` | `VoxelShapeFile` | `minecraft:voxel_shape` |
 | `minecraft:item` | `Item Document` | `minecraft:item` |
 | `tiers` | `Trade Table` | `tiers` |
+
+The catalog enumerates the payload keys recovered from the symbolized Education client, but it cannot replace schema data that BDS did not export. A known payload with no usable root schema still reports `missing-schema`.
 
 The decoded schema value is wrapped under the original MCB payload key. Documents normally also receive `format_version` from the selected schema. `tiers` is a confirmed exception: its root schema is an array and the source JSON is `{ "tiers": [...] }` without `format_version`.
 
@@ -290,6 +298,7 @@ Some `oneOf` schemas describe alternative JSON spellings, not alternative binary
 | Schema title | Binary production selected | Restored representation |
 |---|---|---|
 | `Molang String` | `string` branch | string |
+| `Crafting Catalog Item` | referenced `string` branch | string |
 | `VectorEvents` | array branch | array |
 | `color_expr` | array branch | array |
 | `particle_motion_collision_event_vector` | array branch | array |
@@ -353,6 +362,19 @@ description   ::= schema-ordered item description fields
 
 Item components add normalized `icon`, `hand_equipped`, `max_stack_size`, and `Item Descriptor` values. All 23 current item MCB samples decode exactly.
 
+### Crafting Item Catalogs
+
+```bnf
+crafting-catalog ::= dynamic-array(CraftingCatalogCategory)
+CraftingCatalogCategory ::= string-category-name dynamic-array(CraftingCatalogGroup)
+CraftingCatalogGroup ::= boolean-has-group-identifier
+                         CraftingCatalogGroupIcon? dynamic-array(CraftingCatalogItem)
+CraftingCatalogGroupIcon ::= string-name boolean-has-icon CraftingCatalogItem?
+CraftingCatalogItem ::= string-item-identifier
+```
+
+The exported `Crafting Catalog Item` schema accepts either a string or `{ "name": string }` in JSON. The compiled samples use the normalized string branch directly, with no `oneOf` tag. All 25 current `minecraft:crafting_items_catalog` samples consume the complete payload.
+
 ### Trade Tables
 
 ```bnf
@@ -405,11 +427,12 @@ With the current full preview behavior and resource packs:
 
 | Payload key | MCB files | Restored | Remaining failure |
 |---|---:|---:|---:|
-| `particle_effect` | 200 | 200 | 0 |
+| `particle_effect` | 212 | 212 | 0 |
 | `minecraft:voxel_shape` | 218 | 218 | 0 |
 | `minecraft:item` | 23 | 23 | 0 |
 | `tiers` | 22 | 22 | 0 |
+| `minecraft:crafting_items_catalog` | 25 | 25 | 0 |
 | `minecraft:camera_entity` | 1 | 0 | 1 missing root schema |
-| **Total** | **464** | **463** | **1** |
+| **Total** | **501** | **500** | **1** |
 
 Success means the schema-directed decoder reached EOF exactly and the restored value could be serialized as JSON. It does not mean that original formatting, comments, or explicit-default choices were recoverable.

@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { BRARCHIVE_MAGIC } from '../src/brarchive.js'
+import { MINECRAFT_DOCUMENT_TYPES } from '../src/minecraft-documents.js'
 import { McbDecoder } from '../src/mcb-decoder.js'
 import { run } from '../src/runner.js'
 import { SchemaRegistry } from '../src/schema-registry.js'
@@ -53,6 +54,21 @@ function makeArchive(entries: Array<{ name: string; payload: Buffer }>): Buffer 
   }
   return result
 }
+
+test('Minecraft document catalog covers the symbolized MinecraftDocumentInput payload keys', () => {
+  const payloadKeys = MINECRAFT_DOCUMENT_TYPES.map(document => document.payloadKey)
+  assert.equal(new Set(payloadKeys).size, payloadKeys.length)
+  for (const expected of [
+    'minecraft:block_culling_rules',
+    'minecraft:camera_custom_splines',
+    'minecraft:crafting_items_catalog',
+    'minecraft:processor_list',
+    'minecraft:template_pool',
+    'minecraft:structure_set',
+  ]) {
+    assert.ok(payloadKeys.includes(expected), `Missing document payload key ${expected}`)
+  }
+})
 
 test('McbDecoder uses ordinal order, defaults and optional presence', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-schema-'))
@@ -247,6 +263,98 @@ test('McbDecoder resolves root aliases and supports versionless array roots', as
     assert.deepEqual(new McbDecoder(registry).decode(makeMcb('tiers', Buffer.from([2, 7, 8]))).value, {
       tiers: [7, 8],
     })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('SchemaRegistry discovers envelope payload schemas and the crafting catalog title', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-document-schema-'))
+  try {
+    const schemaDirectory = path.join(root, 'metadata', 'json_schemas', 'test', '1.26.50')
+    await mkdir(schemaDirectory, { recursive: true })
+    await writeFile(path.join(root, 'exist.json'), '{"version":"test"}')
+    await writeFile(path.join(root, 'contents.json'), '[]')
+    await writeFile(
+      path.join(schemaDirectory, 'future-value.json'),
+      JSON.stringify({
+        title: 'Future Value',
+        $id: '/test/1.26.50/future-value.json',
+        'x-format-version': '1.26.50',
+        type: 'object',
+        properties: { name: { type: 'string', 'x-ordinal-index': 0 } },
+        required: ['name'],
+      }),
+    )
+    await writeFile(
+      path.join(schemaDirectory, 'future-document.json'),
+      JSON.stringify({
+        title: 'Future Document',
+        $id: '/test/1.26.50/future-document.json',
+        'x-format-version': '1.26.50',
+        type: 'object',
+        properties: {
+          format_version: { type: 'string', 'x-ordinal-index': 0 },
+          'minecraft:future_payload': { $ref: './future-value.json', 'x-ordinal-index': 1 },
+        },
+        required: ['format_version', 'minecraft:future_payload'],
+      }),
+    )
+    await writeFile(
+      path.join(schemaDirectory, 'string.json'),
+      JSON.stringify({
+        title: 'Catalog Item Name',
+        $id: '/test/1.26.50/string.json',
+        'x-format-version': '1.26.50',
+        type: 'string',
+      }),
+    )
+    await writeFile(
+      path.join(schemaDirectory, 'catalog-item.json'),
+      JSON.stringify({
+        title: 'Crafting Catalog Item',
+        $id: '/test/1.26.50/catalog-item.json',
+        'x-format-version': '1.26.50',
+        oneOf: [
+          { $ref: './string.json' },
+          {
+            type: 'object',
+            properties: { name: { type: 'string', 'x-ordinal-index': 0 } },
+            required: ['name'],
+          },
+        ],
+      }),
+    )
+    await writeFile(
+      path.join(schemaDirectory, 'catalog-document.json'),
+      JSON.stringify({
+        title: 'Crafting Catalog Document',
+        $id: '/test/1.26.50/catalog-document.json',
+        'x-format-version': '1.26.50',
+        type: 'object',
+        properties: { icon: { $ref: './catalog-item.json', 'x-ordinal-index': 0 } },
+        required: ['icon'],
+      }),
+    )
+
+    const registry = await SchemaRegistry.load(root)
+    assert.equal(registry.selectRoot('minecraft:future_payload', '1.26.50').title, 'Future Value')
+    assert.deepEqual(
+      new McbDecoder(registry).decode(makeMcb('minecraft:future_payload', mcbString('future'), [1, 26, 50])).value,
+      {
+        format_version: '1.26.50',
+        'minecraft:future_payload': { name: 'future' },
+      },
+    )
+    assert.deepEqual(
+      new McbDecoder(registry).decode(
+        makeMcb('minecraft:crafting_items_catalog', mcbString('minecraft:stone'), [1, 26, 50]),
+      ).value,
+      {
+        format_version: '1.26.50',
+        'minecraft:crafting_items_catalog': { icon: 'minecraft:stone' },
+      },
+    )
   } finally {
     await rm(root, { recursive: true, force: true })
   }

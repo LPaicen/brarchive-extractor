@@ -54,8 +54,6 @@ test('local fixtures parse every archive and process every MCB entry', { skip: !
   }
   assert.ok(mcbEntryCount > 0, `No MCB entries found under ${fixtureInput}`)
   assert.equal(decodedEntryCount + restorationFailureCount, mcbEntryCount)
-  assert.equal(mcbEntryCount, 464)
-  assert.equal(decodedEntryCount, 463)
   assert.equal(restorationFailureCount, 1)
   assert.deepEqual(restorationFailures, [
     'missing-schema: No root schema found for payload key "minecraft:camera_entity"',

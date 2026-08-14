@@ -1,40 +1,10 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { ToolError } from './errors.js'
+import { minecraftDocumentType, schemaTitleCandidates } from './minecraft-documents.js'
+import type { JsonSchema, ResolvedSchema, SchemaDocument } from './schema-types.js'
 
-export interface JsonSchema {
-  [key: string]: unknown
-  $id?: string
-  $ref?: string
-  title?: string
-  type?: string | string[]
-  properties?: Record<string, JsonSchema>
-  required?: string[]
-  additionalProperties?: JsonSchema | boolean
-  items?: JsonSchema | JsonSchema[]
-  oneOf?: JsonSchema[]
-  enum?: unknown[]
-  default?: unknown
-  minItems?: number
-  maxItems?: number
-  'x-format-version'?: string
-  'x-ordinal-index'?: number
-  'x-underlying-type'?: string
-  'x-key-underlying-type'?: string
-}
-
-export interface SchemaDocument {
-  filePath: string
-  id: string
-  title?: string
-  version?: string
-  schema: JsonSchema
-}
-
-export interface ResolvedSchema {
-  document: SchemaDocument
-  schema: JsonSchema
-}
+export type { JsonSchema, ResolvedSchema, SchemaDocument } from './schema-types.js'
 
 function normalizeId(value: string): string {
   let decoded: string
@@ -51,17 +21,21 @@ function normalizeTitle(value: string): string {
   return value.trim().replaceAll('%20', ' ').toLocaleLowerCase('en-US')
 }
 
-const ROOT_TITLE_ALIASES: Readonly<Record<string, readonly string[]>> = {
-  'minecraft:item': ['item document'],
-  'minecraft:voxel_shape': ['voxelshapefile'],
-  tiers: ['trade table'],
-}
-
 function parseNumericVersion(value: string | undefined): number[] | undefined {
   if (value === undefined || !/^\d+(?:\.\d+)*$/.test(value)) {
     return undefined
   }
   return value.split('.').map(part => Number(part))
+}
+
+function uniqueDocuments(documents: SchemaDocument[]): SchemaDocument[] {
+  const byId = new Map<string, SchemaDocument>()
+  for (const document of documents) {
+    if (!byId.has(document.id)) {
+      byId.set(document.id, document)
+    }
+  }
+  return [...byId.values()]
 }
 
 function compareVersions(left: number[], right: number[]): number {
@@ -118,6 +92,7 @@ export class SchemaRegistry {
   readonly documents: SchemaDocument[]
   readonly #byId: Map<string, SchemaDocument>
   readonly #byTitle: Map<string, SchemaDocument[]>
+  readonly #byPayloadKey: Map<string, SchemaDocument[]>
 
   private constructor(rootPath: string, exportVersion: string | undefined, documents: SchemaDocument[]) {
     this.rootPath = rootPath
@@ -125,6 +100,7 @@ export class SchemaRegistry {
     this.documents = documents
     this.#byId = new Map()
     this.#byTitle = new Map()
+    this.#byPayloadKey = new Map()
 
     for (const document of documents) {
       if (this.#byId.has(document.id)) {
@@ -137,6 +113,47 @@ export class SchemaRegistry {
         const values = this.#byTitle.get(key) ?? []
         values.push(document)
         this.#byTitle.set(key, values)
+      }
+    }
+
+    this.#indexEnvelopePayloadSchemas()
+  }
+
+  #addPayloadSchema(payloadKey: string, document: SchemaDocument): void {
+    const key = normalizeTitle(payloadKey)
+    const values = this.#byPayloadKey.get(key) ?? []
+    values.push(document)
+    this.#byPayloadKey.set(key, values)
+  }
+
+  #indexEnvelopePayloadSchemas(): void {
+    for (const document of this.documents) {
+      const properties = document.schema.properties
+      if (properties === undefined || properties.format_version === undefined) {
+        continue
+      }
+
+      for (const [payloadKey, payloadSchema] of Object.entries(properties)) {
+        const isKnownPayload = minecraftDocumentType(payloadKey) !== undefined
+        const isRequired = document.schema.required?.includes(payloadKey) ?? false
+        if (payloadKey === 'format_version' || (!payloadKey.includes(':') && !isKnownPayload) || !isRequired) {
+          continue
+        }
+
+        if (typeof payloadSchema.$ref === 'string') {
+          const resolved = this.resolve(payloadSchema.$ref, document)
+          this.#addPayloadSchema(payloadKey, {
+            ...resolved.document,
+            version: document.version ?? resolved.document.version,
+            schema: resolved.schema,
+          })
+        } else {
+          this.#addPayloadSchema(payloadKey, {
+            ...document,
+            title: payloadSchema.title ?? document.title,
+            schema: payloadSchema,
+          })
+        }
       }
     }
   }
@@ -204,8 +221,20 @@ export class SchemaRegistry {
 
   selectRoot(payloadKey: string, mcbFormatVersion: string): SchemaDocument {
     const normalizedPayloadKey = normalizeTitle(payloadKey)
-    const titles = [normalizedPayloadKey, ...(ROOT_TITLE_ALIASES[normalizedPayloadKey] ?? [])]
-    const candidates = titles.flatMap(title => this.#byTitle.get(title) ?? [])
+    const envelopeCandidates = this.#byPayloadKey.get(normalizedPayloadKey) ?? []
+    const titles = schemaTitleCandidates(payloadKey)
+    const titleCandidates = titles.flatMap(title => this.#byTitle.get(normalizeTitle(title)) ?? [])
+    const configuredTitles = minecraftDocumentType(payloadKey)?.schemaTitles ?? []
+    const configuredCandidates = configuredTitles.flatMap(
+      title => this.#byTitle.get(normalizeTitle(title)) ?? [],
+    )
+    const candidates = uniqueDocuments(
+      envelopeCandidates.length > 0
+        ? [...envelopeCandidates, ...configuredCandidates]
+        : configuredTitles.length > 0
+          ? configuredCandidates
+          : titleCandidates,
+    )
     if (candidates.length === 0) {
       throw new ToolError('missing-schema', `No root schema found for payload key ${JSON.stringify(payloadKey)}`)
     }

@@ -78,16 +78,24 @@ contents.json
 metadata/json_schemas/
 ```
 
-`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，解析相对 `$ref` 和 JSON Pointer 片段，并按 `title` 对根候选分组。对于数字版本，优先选择不高于 MCB format version 的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。`beta` 等特殊版本必须与 `x-format-version` 精确匹配；缺少 beta schema 时不会改用数字版本 schema。
+`brax` 会递归索引带 `$id` 的 JSON schema，规范化 URI 路径，并解析相对 `$ref` 和 JSON Pointer 片段。查找根 schema 时，首先从同时包含 `format_version` 和 payload key 属性的导出外层 schema 自动建立 payload 绑定；对于 BDS 标题与 payload key 语义不同的情况，再使用游戏文档目录；最后才为未知的新文档尝试精确标题或机械规范化后的标题。因此，只要新导出的外层文档保留标准属性关系，就不需要再补一条硬编码别名。
 
-多数 payload key 与根 schema 标题相同。目前 BDS 导出需要以下已确认别名：
+对于数字版本，优先选择不高于 MCB format version 的最新 `x-format-version`；如果不存在足够旧的版本，则使用最新数字版本继续尝试，并最终通过完整字节消费进行校验。`beta` 等特殊版本必须与 `x-format-version` 精确匹配；缺少 beta schema 时不会改用数字版本 schema。
+
+部分已确认的 payload/title 关系如下：
 
 | MCB payload key | BDS schema 标题 | 还原后的顶层成员 |
 |---|---|---|
 | `particle_effect` | `particle_effect` | `particle_effect` |
+| `minecraft:block` | `BlockDefinitionDocument` | `minecraft:block` |
+| `minecraft:biome` | `Biome Definition` | `minecraft:biome` |
+| `minecraft:crafting_items_catalog` | `Crafting Catalog Document` | `minecraft:crafting_items_catalog` |
+| `minecraft:feature_rules` | `Feature Rule Definition` | `minecraft:feature_rules` |
 | `minecraft:voxel_shape` | `VoxelShapeFile` | `minecraft:voxel_shape` |
 | `minecraft:item` | `Item Document` | `minecraft:item` |
 | `tiers` | `Trade Table` | `tiers` |
+
+文档目录枚举了从带符号教育版客户端中恢复出的 payload key，但它不能替代 BDS 没有导出的 schema 数据。已知 payload 如果没有可用根 schema，仍会报告 `missing-schema`。
 
 解码后的 schema 值会包在原始 MCB payload key 下面。一般文档还会从所选 schema 补入 `format_version`。`tiers` 是已确认的例外：其根 schema 是数组，源 JSON 结构为 `{ "tiers": [...] }`，没有 `format_version`。
 
@@ -290,6 +298,7 @@ tagged-one-of(S) ::= u8-tag value(branch(S, tag))
 | Schema 标题 | 选择的二进制产生式 | 还原表示 |
 |---|---|---|
 | `Molang String` | `string` 分支 | 字符串 |
+| `Crafting Catalog Item` | 引用的 `string` 分支 | 字符串 |
 | `VectorEvents` | 数组分支 | 数组 |
 | `color_expr` | 数组分支 | 数组 |
 | `particle_motion_collision_event_vector` | 数组分支 | 数组 |
@@ -353,6 +362,19 @@ description   ::= 按 schema ordinal 排列的物品描述字段
 
 物品组件还使用归一化的 `icon`、`hand_equipped`、`max_stack_size` 和 `Item Descriptor`。当前 23 个物品 MCB 样本均精确解码。
 
+### 合成物品目录
+
+```bnf
+crafting-catalog ::= dynamic-array(CraftingCatalogCategory)
+CraftingCatalogCategory ::= string-category-name dynamic-array(CraftingCatalogGroup)
+CraftingCatalogGroup ::= boolean-has-group-identifier
+                         CraftingCatalogGroupIcon? dynamic-array(CraftingCatalogItem)
+CraftingCatalogGroupIcon ::= string-name boolean-has-icon CraftingCatalogItem?
+CraftingCatalogItem ::= string-item-identifier
+```
+
+导出的 `Crafting Catalog Item` schema 在 JSON 中允许字符串或 `{ "name": string }`。编译样本直接使用归一化后的字符串分支，没有 `oneOf` tag。当前 25 个 `minecraft:crafting_items_catalog` 样本均完整消费到 payload 末尾。
+
 ### 交易表
 
 ```bnf
@@ -405,11 +427,12 @@ payload key：minecraft:camera_entity
 
 | Payload key | MCB 文件 | 成功还原 | 剩余失败 |
 |---|---:|---:|---:|
-| `particle_effect` | 200 | 200 | 0 |
+| `particle_effect` | 212 | 212 | 0 |
 | `minecraft:voxel_shape` | 218 | 218 | 0 |
 | `minecraft:item` | 23 | 23 | 0 |
 | `tiers` | 22 | 22 | 0 |
+| `minecraft:crafting_items_catalog` | 25 | 25 | 0 |
 | `minecraft:camera_entity` | 1 | 0 | 1 个缺失根 schema |
-| **总计** | **464** | **463** | **1** |
+| **总计** | **501** | **500** | **1** |
 
 “成功”表示 schema 驱动的解码器精确到达 EOF，并且结果能够序列化为 JSON；它不表示原始格式、注释或显式默认值选择能够恢复。

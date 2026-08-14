@@ -1,145 +1,42 @@
 import { mkdir, readFile, readdir, rm, rmdir, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import {
-  applyEdits,
-  createScanner,
-  format as formatJsonc,
-  parseTree as parseJsoncTree,
-  printParseErrorCode,
-  SyntaxKind,
-  type ParseError,
-} from 'jsonc-parser'
 import { isMcb, parseBrarchive, type Brarchive, type BrarchiveEntry } from './brarchive.js'
 import { ToolError, toToolError, type FailureKind } from './errors.js'
+import {
+  formatJsonWithComments,
+  jsonOutputSettings,
+  serializeJson,
+  type JsonOutputSettings,
+} from './json-output.js'
 import { McbDecoder } from './mcb-decoder.js'
+import type {
+  ArchiveReport,
+  ConflictAction,
+  ConflictDecision,
+  ConflictDetails,
+  ConflictResolution,
+  ProgressInfo,
+  RestoreFailure,
+  RunOptions,
+  RunSummary,
+  SourceFileReport,
+} from './runner-types.js'
 import { SchemaRegistry } from './schema-registry.js'
 
-export type JsonFormat = 'pretty' | 'compact'
-export type IndentCharacter = 'space' | 'tab'
-export type ConflictAction = 'overwrite' | 'keep' | 'coexist'
-
-export interface ConflictDetails {
-  destination: string
-  existingSource: string
-  incomingSource: string
-  conflictIndex: number
-  totalConflicts: number
-}
-
-export interface ConflictDecision {
-  action: ConflictAction
-  applyToAll?: boolean
-}
-
-export interface ConflictResolution extends ConflictDetails {
-  action: ConflictAction
-  outputDestination?: string
-}
-
-export interface RunOptions {
-  inputPath: string
-  directoryMode?: boolean
-  recursive?: boolean
-  outputPath?: string
-  schemaPath?: string
-  overwrite?: boolean
-  force?: boolean
-  report?: boolean
-  jsonFormat?: JsonFormat
-  formatAllJson?: boolean
-  indentSize?: number
-  indentCharacter?: IndentCharacter
-  failFast?: boolean
-  preserveFailed?: boolean
-  mcbOnly?: boolean
-  splitArchives?: boolean
-  inPlace?: boolean
-  omitEmptyDirectories?: boolean
-  resolveConflict?: (details: ConflictDetails) => Promise<ConflictDecision>
-  onProgress?: (progress: ProgressInfo) => void
-}
-
-export interface ProgressInfo {
-  phase: 'copy-start' | 'copy-file' | 'copy-complete' | 'archive-start' | 'entry' | 'archive-complete'
-  archive: string
-  archiveIndex: number
-  archiveCount: number
-  entry?: string
-  entryIndex?: number
-  entryCount?: number
-  overallIndex?: number
-  overallCount?: number
-  failed?: boolean
-  interrupted?: boolean
-}
-
-export interface RestoreFailure {
-  archive: string
-  entry: string
-  kind: FailureKind
-  reason: string
-  offset?: number
-  schemaPath?: string
-}
-
-export interface ArchiveReport {
-  archive: string
-  archiveVersion?: number
-  output: string
-  entries: number
-  selectedEntries: number
-  processedEntries: number
-  mcbEntries: number
-  restoredMcb: number
-  failedMcb: number
-  jsonEntries: number
-  formattedJson: number
-  failedJson: number
-  copiedEntries: number
-  skippedEntries: number
-  conflictSkippedEntries: number
-  failures: RestoreFailure[]
-  reportPath?: string
-  interrupted?: boolean
-  archiveError?: string
-}
-
-export interface SourceFileReport {
-  files: number
-  selectedFiles: number
-  processedFiles: number
-  mcbFiles: number
-  restoredMcb: number
-  failedMcb: number
-  jsonFiles: number
-  formattedJson: number
-  failedJson: number
-  copiedFiles: number
-  skippedFiles: number
-  conflictSkippedFiles: number
-  failures: RestoreFailure[]
-  interrupted: boolean
-}
-
-export interface RunSummary {
-  schemaRoot?: string
-  schemaExportVersion?: string
-  archives: ArchiveReport[]
-  sourceFiles: SourceFileReport
-  failures: RestoreFailure[]
-  archiveErrors: number
-  interrupted: boolean
-  outputRoot: string
-  totalArchives: number
-  conflictsDetected: number
-  conflictsResolved: ConflictResolution[]
-}
-
-interface JsonOutputSettings {
-  format: JsonFormat
-  formatAllJson: boolean
-  indentation: string
-}
+export type {
+  ArchiveReport,
+  ConflictAction,
+  ConflictDecision,
+  ConflictDetails,
+  ConflictResolution,
+  IndentCharacter,
+  JsonFormat,
+  ProgressInfo,
+  RestoreFailure,
+  RunOptions,
+  RunSummary,
+  SourceFileReport,
+} from './runner-types.js'
 
 interface PlannedArchive {
   archivePath: string
@@ -167,95 +64,6 @@ interface PlannedWrite {
 interface OutputClaim {
   destination: string
   source: string
-}
-
-function jsonOutputSettings(options: RunOptions): JsonOutputSettings {
-  const format = options.jsonFormat ?? 'pretty'
-  if (format !== 'pretty' && format !== 'compact') {
-    throw new ToolError('invalid-option', `Unsupported JSON format: ${String(format)}`)
-  }
-
-  const indentSize = options.indentSize ?? 2
-  if (!Number.isInteger(indentSize) || indentSize < 0 || indentSize > 10) {
-    throw new ToolError('invalid-option', `JSON indent size must be an integer from 0 to 10: ${String(indentSize)}`)
-  }
-
-  const indentCharacter = options.indentCharacter ?? 'space'
-  if (indentCharacter !== 'space' && indentCharacter !== 'tab') {
-    throw new ToolError('invalid-option', `JSON indent character must be space or tab: ${String(indentCharacter)}`)
-  }
-
-  const unit = indentCharacter === 'tab' ? '\t' : ' '
-  return {
-    format,
-    formatAllJson: options.formatAllJson ?? false,
-    indentation: unit.repeat(indentSize),
-  }
-}
-
-function serializeJson(value: unknown, settings: JsonOutputSettings): string {
-  if (settings.format === 'compact') {
-    return JSON.stringify(value)
-  }
-  return `${JSON.stringify(value, null, settings.indentation)}\n`
-}
-
-function validateJsonWithComments(text: string): void {
-  const errors: ParseError[] = []
-  parseJsoncTree(text, errors, { allowTrailingComma: false, disallowComments: false })
-  if (errors.length === 0) {
-    return
-  }
-
-  const first = errors[0]!
-  throw new SyntaxError(`${printParseErrorCode(first.error)} at offset ${first.offset}`)
-}
-
-function compactJsonWithComments(text: string): string {
-  const scanner = createScanner(text, false)
-  const tokens: Array<{ kind: SyntaxKind; text: string }> = []
-  for (let kind = scanner.scan(); kind !== SyntaxKind.EOF; kind = scanner.scan()) {
-    if (kind === SyntaxKind.Trivia || kind === SyntaxKind.LineBreakTrivia) {
-      continue
-    }
-    const offset = scanner.getTokenOffset()
-    tokens.push({ kind, text: text.slice(offset, offset + scanner.getTokenLength()) })
-  }
-
-  let result = ''
-  for (const [index, token] of tokens.entries()) {
-    result += token.text
-    if (token.kind === SyntaxKind.LineCommentTrivia && index + 1 < tokens.length) {
-      result += '\n'
-    }
-  }
-  return result
-}
-
-function formatJsonWithComments(text: string, settings: JsonOutputSettings): string {
-  validateJsonWithComments(text)
-  const normalizedText = text.replace(/\r\n?/g, '\n')
-  if (settings.format === 'compact') {
-    return compactJsonWithComments(normalizedText)
-  }
-  if (settings.indentation.length === 0) {
-    return `${compactJsonWithComments(normalizedText)}\n`
-  }
-
-  const insertSpaces = settings.indentation[0] === ' '
-  let formatted = applyEdits(
-    normalizedText,
-    formatJsonc(normalizedText, undefined, {
-      eol: '\n',
-      insertFinalNewline: true,
-      insertSpaces,
-      tabSize: insertSpaces ? settings.indentation.length : 1,
-    }),
-  )
-  if (!insertSpaces && settings.indentation.length > 1) {
-    formatted = formatted.replace(/^\t+/gm, indentation => indentation.repeat(settings.indentation.length))
-  }
-  return formatted.endsWith('\n') ? formatted : `${formatted}\n`
 }
 
 async function collectFiles(directory: string, recursive: boolean): Promise<string[]> {
