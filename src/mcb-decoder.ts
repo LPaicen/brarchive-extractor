@@ -110,10 +110,9 @@ export class McbDecoder {
       )
     }
 
-    const outputFormatVersion = root.version ?? formatVersion
     const value: Record<string, unknown> = !documentIncludesFormatVersion(payloadKey)
       ? { [payloadKey]: decoded }
-      : { format_version: outputFormatVersion, [payloadKey]: decoded }
+      : { format_version: formatVersion, [payloadKey]: decoded }
     return {
       header: { major, minor, patch, preRelease, buildMeta, formatVersion, payloadKey },
       schemaId: root.id,

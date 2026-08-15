@@ -97,11 +97,11 @@ Representative confirmed payload/title relationships include:
 
 The catalog enumerates the payload keys recovered from the symbolized Education client, but it cannot replace schema data that BDS did not export. A known payload with no usable root schema still reports `missing-schema`.
 
-The decoded schema value is wrapped under the original MCB payload key. Documents normally also receive `format_version` from the selected schema. `tiers` is a confirmed exception: its root schema is an array and the source JSON is `{ "tiers": [...] }` without `format_version`.
+The decoded schema value is wrapped under the original MCB payload key. Documents normally also receive `format_version` from the MCB header. The selected schema version controls how the payload is decoded but does not replace the version stored in the MCB. `tiers` is a confirmed exception: its root schema is an array and the source JSON is `{ "tiers": [...] }` without `format_version`.
 
 ```bnf
 normal-root-json ::= {
-  "format_version": selected-schema-version,
+  "format_version": mcb-header-version,
   payload-key: root-payload
 }
 

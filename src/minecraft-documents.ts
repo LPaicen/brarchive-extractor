@@ -7,7 +7,7 @@ export interface MinecraftDocumentType {
 // Payload keys are taken from MinecraftDocumentInput call sites in the symbolized
 // Education client. Schema titles are the corresponding names exported by BDS.
 export const MINECRAFT_DOCUMENT_TYPES: readonly MinecraftDocumentType[] = [
-  { payloadKey: 'minecraft:camera_entity', schemaTitles: [] },
+  { payloadKey: 'minecraft:camera_entity', schemaTitles: ['Camera Document'] },
   { payloadKey: 'minecraft:cubemap_settings', schemaTitles: [] },
   { payloadKey: 'minecraft:water_settings', schemaTitles: [] },
   { payloadKey: 'minecraft:shadow_settings', schemaTitles: [] },

@@ -17,7 +17,7 @@ import {
   type RunSummary,
 } from './runner.js'
 
-const VERSION = '0.2.0'
+const VERSION = '0.2.1'
 const ANSI = {
   reset: '\u001b[0m',
   bold: '\u001b[1m',

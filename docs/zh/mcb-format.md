@@ -97,11 +97,11 @@ metadata/json_schemas/
 
 文档目录枚举了从带符号教育版客户端中恢复出的 payload key，但它不能替代 BDS 没有导出的 schema 数据。已知 payload 如果没有可用根 schema，仍会报告 `missing-schema`。
 
-解码后的 schema 值会包在原始 MCB payload key 下面。一般文档还会从所选 schema 补入 `format_version`。`tiers` 是已确认的例外：其根 schema 是数组，源 JSON 结构为 `{ "tiers": [...] }`，没有 `format_version`。
+解码后的 schema 值会包在原始 MCB payload key 下面。一般文档还会使用 MCB 文件头中记录的版本作为 `format_version`。所选 schema 的版本只决定如何解码 payload，不会替换 MCB 自身记录的版本。`tiers` 是已确认的例外：其根 schema 是数组，源 JSON 结构为 `{ "tiers": [...] }`，没有 `format_version`。
 
 ```bnf
 normal-root-json ::= {
-  "format_version": selected-schema-version,
+  "format_version": mcb-header-version,
   payload-key: root-payload
 }
 

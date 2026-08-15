@@ -355,6 +355,38 @@ test('McbDecoder restores beta versions with the matching beta schema', async ()
   }
 })
 
+test('McbDecoder restores format_version from the MCB header instead of the selected schema', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-header-version-'))
+  try {
+    const schemaDirectory = path.join(root, 'metadata', 'json_schemas', 'test', '1.20.0')
+    await mkdir(schemaDirectory, { recursive: true })
+    await writeFile(
+      path.join(schemaDirectory, 'root.json'),
+      JSON.stringify({
+        title: 'header_version_document',
+        $id: '/test/1.20.0/root.json',
+        'x-format-version': '1.20.0',
+        type: 'object',
+        properties: {
+          name: { type: 'string', 'x-ordinal-index': 0 },
+        },
+        required: ['name'],
+      }),
+    )
+
+    const decoded = new McbDecoder(await SchemaRegistry.load(root)).decode(
+      makeMcb('header_version_document', mcbString('value'), [1, 26, 30]),
+    )
+    assert.equal(decoded.schemaVersion, '1.20.0')
+    assert.deepEqual(decoded.value, {
+      format_version: '1.26.30',
+      header_version_document: { name: 'value' },
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('McbDecoder resolves root aliases and supports versionless array roots', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'brarchive-extractor-alias-schema-'))
   try {
